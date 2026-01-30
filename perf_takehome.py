@@ -192,6 +192,7 @@ class KernelBuilder:
         tmp_val = self.alloc_scratch("tmp_val")
         tmp_node_val = self.alloc_scratch("tmp_node_val")
         tmp_addr = self.alloc_scratch("tmp_addr")
+        tmp_idx_move = self.alloc_scratch("tmp_idx_move")
 
         for round in range(rounds):
             for i in range(batch_size):
@@ -213,11 +214,11 @@ class KernelBuilder:
                 body.extend(self.build_hash(tmp_val, tmp1, tmp2, round, i))
                 body.append(("debug", ("compare", tmp_val, (round, i, "hashed_val"))))
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                body.append(("alu", ("%", tmp1, tmp_val, two_const)))
-                body.append(("alu", ("==", tmp1, tmp1, zero_const)))
-                body.append(("flow", ("select", tmp3, tmp1, one_const, two_const)))
-                body.append(("alu", ("*", tmp_idx, tmp_idx, two_const)))
-                body.append(("alu", ("+", tmp_idx, tmp_idx, tmp3)))
+                body.append(("alu", ("<<", tmp_idx, tmp_idx, one_const)))
+                body.append(("alu", ("&", tmp_idx_move, tmp_val, one_const)))
+                body.append(("alu", ("+", tmp_idx_move, tmp_idx_move, one_const)))
+                body.append(("alu", ("+", tmp_idx, tmp_idx, tmp_idx_move)))
+
                 body.append(("debug", ("compare", tmp_idx, (round, i, "next_idx"))))
                 # idx = 0 if idx >= n_nodes else idx
                 body.append(("alu", ("<", tmp1, tmp_idx, self.scratch["n_nodes"])))
