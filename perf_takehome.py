@@ -22,6 +22,7 @@ import unittest
 
 from problem import (
     Engine,
+    Instruction,
     DebugInfo,
     SLOT_LIMITS,
     VLEN,
@@ -48,12 +49,48 @@ class KernelBuilder:
     def debug_info(self):
         return DebugInfo(scratch_map=self.scratch_debug)
 
-    def build(self, slots: list[tuple[Engine, tuple]], vliw: bool = False):
+    def append_alu(self, cycles: [Instruction], single_instruction):
+        if not cycles:
+            cycles.append({'alu': [single_instruction]})
+            return
+        
+        last_cyc = cycles[-1]
+        if 'alu' not in last_cyc or len(last_cyc['alu']) >= SLOT_LIMITS['alu']:
+            cycles.append({'alu': [single_instruction]})
+            return
+        
+        reads = set()
+        writes = set()
+        for uop in last_cyc['alu']:
+            op, dest, a1, a2 = uop
+            writes.add(dest)
+            reads.add(dest)
+            reads.add(a1)
+            reads.add(a2)
+        
+        op, dest, a1, a2 = single_instruction
+        if dest not in reads and a1 not in writes and a2 not in writes:
+            cycles[-1]["alu"].append(single_instruction)
+        else:
+            cycles.append({'alu': [single_instruction]})
+
+    def build(self, single_instructions: list[tuple[Engine, tuple]], vliw: bool = False):
         # Simple slot packing that just uses one slot per instruction bundle
-        instrs = []
-        for engine, slot in slots:
-            instrs.append({engine: [slot]})
-        return instrs
+        # op dest a1 a2
+        # dest <- last write, last read
+        # a1 <- last write, last read
+        # a2 <- last write, last read
+        # register renaming
+        cycles = []
+        for engine, instruction in single_instructions:
+            # consider alu
+            if engine == 'alu':
+                self.append_alu(cycles, instruction)
+                continue
+            
+            cycles.append({engine: [instruction]})
+
+        return cycles
 
     def add(self, engine, slot):
         self.instrs.append({engine: [slot]})
