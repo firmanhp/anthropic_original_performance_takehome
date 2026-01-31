@@ -37,7 +37,7 @@ from problem import (
     reference_kernel2,
 )
 
-from scheduler import (ScratchRegPool)
+from scheduler import (ScratchRegPool, Scheduler)
 
 
 class KernelBuilder:
@@ -78,18 +78,18 @@ class KernelBuilder:
         else:
             cycles.append({'alu': [single_instruction]})
 
-    def build(self, single_instructions: list[tuple[Engine, tuple]], vliw: bool = False):
+    def build(self, single_instructions: list[tuple[Engine, tuple]], vliw: bool = True):
         # Simple slot packing that just uses one slot per instruction bundle
-        cycles = []
-        for engine, instruction in single_instructions:
-            # consider alu
-            if engine == 'alu':
-                self.append_alu(cycles, instruction)
-                continue
+        # cycles = []
+        # for engine, instruction in single_instructions:
+        #     # consider alu
+        #     if engine == 'alu':
+        #         self.append_alu(cycles, instruction)
+        #         continue
             
-            cycles.append({engine: [instruction]})
+        #     cycles.append({engine: [instruction]})
 
-        return cycles
+        return Scheduler().build(single_instructions, vliw)
 
     def add(self, engine, slot):
         self.instrs.append({engine: [slot]})
@@ -98,10 +98,10 @@ class KernelBuilder:
         assert val in self.const_map, f"Unreserved const: {val}"
         return self.const_map[val]
 
-    def preload_const(self, val, name=None):
+    def preload_const(self, val):
         if val in self.const_map:
             return
-        addr = self.pool.alloc(name)
+        addr = self.pool.alloc(f"CONST[0x{val:X}]")
         self.add("load", ("const", addr, val))
         self.const_map[val] = addr
 
@@ -206,8 +206,8 @@ class KernelBuilder:
         tmp_addr = self.pool.alloc()
         tmp_addr2 = self.pool.alloc()
         for i in range(batch_size):
-            idx_regstore.append(self.pool.alloc())
-            val_regstore.append(self.pool.alloc())
+            idx_regstore.append(self.pool.alloc(f"idx[{i}]"))
+            val_regstore.append(self.pool.alloc(f"val[{i}]"))
 
             body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_indices_p"], i)))
             body.append(("load", ("load", idx_regstore[i], tmp_addr)))
@@ -365,7 +365,7 @@ class Tests(unittest.TestCase):
     #             )
 
     def test_kernel_cycles(self):
-        do_kernel_test(10, 16, 256)
+        do_kernel_test(10, 16, 256, prints=False)
 
 
 # To run all the tests:
