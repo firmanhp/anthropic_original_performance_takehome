@@ -204,6 +204,7 @@ class KernelBuilder:
         idx_regstore = []
         val_regstore = []
         tmp_addr = self.pool.alloc()
+        tmp_addr2 = self.pool.alloc()
         for i in range(batch_size):
             idx_regstore.append(self.pool.alloc())
             val_regstore.append(self.pool.alloc())
@@ -211,9 +212,10 @@ class KernelBuilder:
             body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_indices_p"], i)))
             body.append(("load", ("load", idx_regstore[i], tmp_addr)))
 
-            body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_values_p"], i)))
-            body.append(("load", ("load", val_regstore[i], tmp_addr)))
+            body.append(("flow", ("add_imm", tmp_addr2, input_reg["inp_values_p"], i)))
+            body.append(("load", ("load", val_regstore[i], tmp_addr2)))
         self.pool.free(tmp_addr)
+        self.pool.free(tmp_addr2)
 
         for round in range(rounds):
             for i in range(batch_size):
@@ -263,6 +265,7 @@ class KernelBuilder:
 
         # Write into memory
         tmp_addr = self.pool.alloc()
+        tmp_addr2 = self.pool.alloc()
         for i in range(batch_size):
             idx_regstore.append(self.pool.alloc())
             val_regstore.append(self.pool.alloc())
@@ -270,9 +273,10 @@ class KernelBuilder:
             body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_indices_p"], i)))
             body.append(("store", ("store", tmp_addr, idx_regstore[i])))
 
-            body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_values_p"], i)))
-            body.append(("store", ("store", tmp_addr, val_regstore[i])))
+            body.append(("flow", ("add_imm", tmp_addr2, input_reg["inp_values_p"], i)))
+            body.append(("store", ("store", tmp_addr2, val_regstore[i])))
         self.pool.free(tmp_addr)
+        self.pool.free(tmp_addr2)
 
         body_instrs = self.build(body)
         self.instrs.extend(body_instrs)
