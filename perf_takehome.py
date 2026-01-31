@@ -105,6 +105,7 @@ class KernelBuilder:
         self.add("load", ("const", addr, val))
         self.const_map[val] = addr
 
+    #Robert Jenkins, jenkins32: https://gist.github.com/badboy/6267743#robert-jenkins-32-bit-integer-hash-function
     def build_hash(self, val_hash_reg, tmp1, tmp2, round, i):
         slots = []
 
@@ -174,13 +175,13 @@ class KernelBuilder:
         self.preload_const(0)
         self.preload_const(1)
         self.preload_const(2)
-        for i in range(batch_size):
-            self.preload_const(i)
 
         # Scratch space addresses
 
         input_reg = {}
         for i, v in enumerate(init_vars):
+            # consider: replacing const register with tmp <- add_imm ZERO #i
+            self.preload_const(i);
             input_reg[v] = self.pool.alloc(v, 1)
             self.add("load", ("load", input_reg[v], self.scratch_const(i)))
 
@@ -198,7 +199,7 @@ class KernelBuilder:
 
         body = []  # array of slots
 
-        # assumption only works with small batch sizes!
+        # this code only works with small batch sizes! bcs it is not smart enough ;)
         # instead of working in memory, let's put into register
         idx_regstore = []
         val_regstore = []
@@ -207,11 +208,10 @@ class KernelBuilder:
             idx_regstore.append(self.pool.alloc())
             val_regstore.append(self.pool.alloc())
 
-            i_const = self.scratch_const(i)
-            body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
+            body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_indices_p"], i)))
             body.append(("load", ("load", idx_regstore[i], tmp_addr)))
 
-            body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
+            body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_values_p"], i)))
             body.append(("load", ("load", val_regstore[i], tmp_addr)))
         self.pool.free(tmp_addr)
 
@@ -220,9 +220,7 @@ class KernelBuilder:
                 # Scalar scratch registers
                 tmp1 = self.pool.alloc()
                 tmp2 = self.pool.alloc()
-                tmp3 = self.pool.alloc()
                 tmp_idx = self.pool.alloc()
-                tmp_val = self.pool.alloc()
                 tmp_node_val = self.pool.alloc()
                 tmp_addr = self.pool.alloc()
                 tmp_idx_move = self.pool.alloc()
@@ -231,10 +229,12 @@ class KernelBuilder:
                 body.append(("debug", ("compare", idx_regstore[i], (round, i, "idx"))))
                 # val = mem[inp_values_p + i]
                 body.append(("debug", ("compare", val_regstore[i], (round, i, "val"))))
+
                 # node_val = mem[forest_values_p + idx]
                 body.append(("alu", ("+", tmp_addr, input_reg["forest_values_p"], idx_regstore[i])))
                 body.append(("load", ("load", tmp_node_val, tmp_addr)))
                 body.append(("debug", ("compare", tmp_node_val, (round, i, "node_val"))))
+
                 # val = myhash(val ^ node_val)
                 # mem[inp_values_p + i] = val
                 body.append(("alu", ("^", val_regstore[i], val_regstore[i], tmp_node_val)))
@@ -244,7 +244,7 @@ class KernelBuilder:
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
                 body.append(("alu", ("<<", tmp_idx, idx_regstore[i], one_const)))
                 body.append(("alu", ("&", tmp_idx_move, val_regstore[i], one_const)))
-                body.append(("alu", ("+", tmp_idx_move, tmp_idx_move, one_const)))
+                body.append(("flow", ("add_imm", tmp_idx_move, tmp_idx_move, 1)))
                 body.append(("alu", ("+", idx_regstore[i], tmp_idx, tmp_idx_move)))
 
                 body.append(("debug", ("compare", idx_regstore[i], (round, i, "next_idx"))))
@@ -256,9 +256,7 @@ class KernelBuilder:
 
                 self.pool.free(tmp1)
                 self.pool.free(tmp2)
-                self.pool.free(tmp3)
                 self.pool.free(tmp_idx)
-                self.pool.free(tmp_val)
                 self.pool.free(tmp_node_val)
                 self.pool.free(tmp_addr)
                 self.pool.free(tmp_idx_move)
@@ -269,11 +267,10 @@ class KernelBuilder:
             idx_regstore.append(self.pool.alloc())
             val_regstore.append(self.pool.alloc())
 
-            i_const = self.scratch_const(i)
-            body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
+            body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_indices_p"], i)))
             body.append(("store", ("store", tmp_addr, idx_regstore[i])))
 
-            body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
+            body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_values_p"], i)))
             body.append(("store", ("store", tmp_addr, val_regstore[i])))
         self.pool.free(tmp_addr)
 
