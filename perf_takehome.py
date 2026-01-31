@@ -149,6 +149,16 @@ class KernelBuilder:
         Like reference_kernel2 but building actual instructions.
         Scalar implementation using only scalar ALU and load/store.
         """
+        init_vars = [
+            "rounds",
+            "n_nodes",
+            "batch_size",
+            "forest_height",
+            "forest_values_p",
+            "inp_indices_p",
+            "inp_values_p",
+        ]
+
         # Const preloads
         self.preload_const(0x7ED55D16)
         self.preload_const(12)
@@ -172,20 +182,11 @@ class KernelBuilder:
         tmp2 = self.pool.alloc("tmp2")
         tmp3 = self.pool.alloc("tmp3")
         # Scratch space addresses
-        init_vars = [
-            "rounds",
-            "n_nodes",
-            "batch_size",
-            "forest_height",
-            "forest_values_p",
-            "inp_indices_p",
-            "inp_values_p",
-        ]
+
         input_reg = {}
         for i, v in enumerate(init_vars):
             input_reg[v] = self.pool.alloc(v, 1)
-            self.add("load", ("const", tmp1, i))
-            self.add("load", ("load", input_reg[v], tmp1))
+            self.add("load", ("load", input_reg[v], self.scratch_const(i)))
 
         zero_const = self.scratch_const(0)
         one_const = self.scratch_const(1)
