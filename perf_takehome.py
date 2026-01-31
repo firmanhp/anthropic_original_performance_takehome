@@ -59,6 +59,10 @@ class KernelBuilder:
             cycles.append({'alu': [single_instruction]})
             return
         
+        # op dest a1 a2
+        # dest <- last write, last read
+        # a1 <- last write, last read
+        # a2 <- last write, last read
         reads = set()
         writes = set()
         for uop in last_cyc['alu']:
@@ -76,11 +80,6 @@ class KernelBuilder:
 
     def build(self, single_instructions: list[tuple[Engine, tuple]], vliw: bool = False):
         # Simple slot packing that just uses one slot per instruction bundle
-        # op dest a1 a2
-        # dest <- last write, last read
-        # a1 <- last write, last read
-        # a2 <- last write, last read
-        # register renaming
         cycles = []
         for engine, instruction in single_instructions:
             # consider alu
@@ -178,9 +177,6 @@ class KernelBuilder:
         for i in range(batch_size):
             self.preload_const(i)
 
-        tmp1 = self.pool.alloc("tmp1")
-        tmp2 = self.pool.alloc("tmp2")
-        tmp3 = self.pool.alloc("tmp3")
         # Scratch space addresses
 
         input_reg = {}
@@ -202,15 +198,18 @@ class KernelBuilder:
 
         body = []  # array of slots
 
-        # Scalar scratch registers
-        tmp_idx = self.pool.alloc("tmp_idx")
-        tmp_val = self.pool.alloc("tmp_val")
-        tmp_node_val = self.pool.alloc("tmp_node_val")
-        tmp_addr = self.pool.alloc("tmp_addr")
-        tmp_idx_move = self.pool.alloc("tmp_idx_move")
-
         for round in range(rounds):
             for i in range(batch_size):
+                # Scalar scratch registers
+                tmp1 = self.pool.alloc()
+                tmp2 = self.pool.alloc()
+                tmp3 = self.pool.alloc()
+                tmp_idx = self.pool.alloc()
+                tmp_val = self.pool.alloc()
+                tmp_node_val = self.pool.alloc()
+                tmp_addr = self.pool.alloc()
+                tmp_idx_move = self.pool.alloc()
+
                 i_const = self.scratch_const(i)
                 # idx = mem[inp_indices_p + i]
                 body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
@@ -245,6 +244,15 @@ class KernelBuilder:
                 # mem[inp_values_p + i] = val
                 body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
                 body.append(("store", ("store", tmp_addr, tmp_val)))
+
+                self.pool.free(tmp1)
+                self.pool.free(tmp2)
+                self.pool.free(tmp3)
+                self.pool.free(tmp_idx)
+                self.pool.free(tmp_val)
+                self.pool.free(tmp_node_val)
+                self.pool.free(tmp_addr)
+                self.pool.free(tmp_idx_move)
 
         body_instrs = self.build(body)
         self.instrs.extend(body_instrs)
