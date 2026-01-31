@@ -198,6 +198,23 @@ class KernelBuilder:
 
         body = []  # array of slots
 
+        # assumption only works with small batch sizes!
+        # instead of working in memory, let's put into register
+        idx_regstore = []
+        val_regstore = []
+        tmp_addr = self.pool.alloc()
+        for i in range(batch_size):
+            idx_regstore.append(self.pool.alloc())
+            val_regstore.append(self.pool.alloc())
+
+            i_const = self.scratch_const(i)
+            body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
+            body.append(("load", ("load", idx_regstore[i], tmp_addr)))
+
+            body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
+            body.append(("load", ("load", val_regstore[i], tmp_addr)))
+        self.pool.free(tmp_addr)
+
         for round in range(rounds):
             for i in range(batch_size):
                 # Scalar scratch registers
@@ -210,40 +227,32 @@ class KernelBuilder:
                 tmp_addr = self.pool.alloc()
                 tmp_idx_move = self.pool.alloc()
 
-                i_const = self.scratch_const(i)
                 # idx = mem[inp_indices_p + i]
-                body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
-                body.append(("load", ("load", tmp_idx, tmp_addr)))
-                body.append(("debug", ("compare", tmp_idx, (round, i, "idx"))))
+                body.append(("debug", ("compare", idx_regstore[i], (round, i, "idx"))))
                 # val = mem[inp_values_p + i]
-                body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
-                body.append(("load", ("load", tmp_val, tmp_addr)))
-                body.append(("debug", ("compare", tmp_val, (round, i, "val"))))
+                body.append(("debug", ("compare", val_regstore[i], (round, i, "val"))))
                 # node_val = mem[forest_values_p + idx]
-                body.append(("alu", ("+", tmp_addr, input_reg["forest_values_p"], tmp_idx)))
+                body.append(("alu", ("+", tmp_addr, input_reg["forest_values_p"], idx_regstore[i])))
                 body.append(("load", ("load", tmp_node_val, tmp_addr)))
                 body.append(("debug", ("compare", tmp_node_val, (round, i, "node_val"))))
                 # val = myhash(val ^ node_val)
-                body.append(("alu", ("^", tmp_val, tmp_val, tmp_node_val)))
-                body.extend(self.build_hash(tmp_val, tmp1, tmp2, round, i))
-                body.append(("debug", ("compare", tmp_val, (round, i, "hashed_val"))))
-                # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                body.append(("alu", ("<<", tmp_idx, tmp_idx, one_const)))
-                body.append(("alu", ("&", tmp_idx_move, tmp_val, one_const)))
-                body.append(("alu", ("+", tmp_idx_move, tmp_idx_move, one_const)))
-                body.append(("alu", ("+", tmp_idx, tmp_idx, tmp_idx_move)))
-
-                body.append(("debug", ("compare", tmp_idx, (round, i, "next_idx"))))
-                # idx = 0 if idx >= n_nodes else idx
-                body.append(("alu", ("<", tmp1, tmp_idx, input_reg["n_nodes"])))
-                body.append(("flow", ("select", tmp_idx, tmp1, tmp_idx, zero_const)))
-                body.append(("debug", ("compare", tmp_idx, (round, i, "wrapped_idx"))))
-                # mem[inp_indices_p + i] = idx
-                body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
-                body.append(("store", ("store", tmp_addr, tmp_idx)))
                 # mem[inp_values_p + i] = val
-                body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
-                body.append(("store", ("store", tmp_addr, tmp_val)))
+                body.append(("alu", ("^", val_regstore[i], val_regstore[i], tmp_node_val)))
+                body.extend(self.build_hash(val_regstore[i], tmp1, tmp2, round, i))
+                body.append(("debug", ("compare", val_regstore[i], (round, i, "hashed_val"))))
+
+                # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                body.append(("alu", ("<<", tmp_idx, idx_regstore[i], one_const)))
+                body.append(("alu", ("&", tmp_idx_move, val_regstore[i], one_const)))
+                body.append(("alu", ("+", tmp_idx_move, tmp_idx_move, one_const)))
+                body.append(("alu", ("+", idx_regstore[i], tmp_idx, tmp_idx_move)))
+
+                body.append(("debug", ("compare", idx_regstore[i], (round, i, "next_idx"))))
+                # idx = 0 if idx >= n_nodes else idx
+                # mem[inp_indices_p + i] = idx
+                body.append(("alu", ("<", tmp1, idx_regstore[i], input_reg["n_nodes"])))
+                body.append(("flow", ("select", idx_regstore[i], tmp1, idx_regstore[i], zero_const)))
+                body.append(("debug", ("compare", idx_regstore[i], (round, i, "wrapped_idx"))))
 
                 self.pool.free(tmp1)
                 self.pool.free(tmp2)
@@ -253,6 +262,20 @@ class KernelBuilder:
                 self.pool.free(tmp_node_val)
                 self.pool.free(tmp_addr)
                 self.pool.free(tmp_idx_move)
+
+        # Write into memory
+        tmp_addr = self.pool.alloc()
+        for i in range(batch_size):
+            idx_regstore.append(self.pool.alloc())
+            val_regstore.append(self.pool.alloc())
+
+            i_const = self.scratch_const(i)
+            body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
+            body.append(("store", ("store", tmp_addr, idx_regstore[i])))
+
+            body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
+            body.append(("store", ("store", tmp_addr, val_regstore[i])))
+        self.pool.free(tmp_addr)
 
         body_instrs = self.build(body)
         self.instrs.extend(body_instrs)
