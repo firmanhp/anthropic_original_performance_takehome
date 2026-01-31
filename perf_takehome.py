@@ -246,7 +246,7 @@ class KernelBuilder:
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
                 body.append(("alu", ("<<", tmp_idx, idx_regstore[i], one_const)))
                 body.append(("alu", ("&", tmp_idx_move, val_regstore[i], one_const)))
-                body.append(("flow", ("add_imm", tmp_idx_move, tmp_idx_move, 1)))
+                body.append(("alu", ("+", tmp_idx_move, tmp_idx_move, one_const)))
                 body.append(("alu", ("+", idx_regstore[i], tmp_idx, tmp_idx_move)))
 
                 body.append(("debug", ("compare", idx_regstore[i], (round, i, "next_idx"))))
