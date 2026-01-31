@@ -37,17 +37,17 @@ from problem import (
     reference_kernel2,
 )
 
+from scheduler import (ScratchRegPool)
+
 
 class KernelBuilder:
     def __init__(self):
         self.instrs = []
-        self.scratch = {}
-        self.scratch_debug = {}
-        self.scratch_ptr = 0
+        self.pool = ScratchRegPool()
         self.const_map = {}
 
     def debug_info(self):
-        return DebugInfo(scratch_map=self.scratch_debug)
+        return DebugInfo(scratch_map=self.pool.scratch_debug)
 
     def append_alu(self, cycles: [Instruction], single_instruction):
         if not cycles:
@@ -95,21 +95,16 @@ class KernelBuilder:
     def add(self, engine, slot):
         self.instrs.append({engine: [slot]})
 
-    def alloc_scratch(self, name=None, length=1):
-        addr = self.scratch_ptr
-        if name is not None:
-            self.scratch[name] = addr
-            self.scratch_debug[addr] = (name, length)
-        self.scratch_ptr += length
-        assert self.scratch_ptr <= SCRATCH_SIZE, "Out of scratch space"
-        return addr
-
     def scratch_const(self, val, name=None):
-        if val not in self.const_map:
-            addr = self.alloc_scratch(name)
-            self.add("load", ("const", addr, val))
-            self.const_map[val] = addr
+        assert val in self.const_map, f"Unreserved const: {val}"
         return self.const_map[val]
+
+    def preload_const(self, val, name=None):
+        if val in self.const_map:
+            return
+        addr = self.pool.alloc(name)
+        self.add("load", ("const", addr, val))
+        self.const_map[val] = addr
 
     def build_hash(self, val_hash_reg, tmp1, tmp2, round, i):
         slots = []
@@ -154,9 +149,28 @@ class KernelBuilder:
         Like reference_kernel2 but building actual instructions.
         Scalar implementation using only scalar ALU and load/store.
         """
-        tmp1 = self.alloc_scratch("tmp1")
-        tmp2 = self.alloc_scratch("tmp2")
-        tmp3 = self.alloc_scratch("tmp3")
+        # Const preloads
+        self.preload_const(0x7ED55D16)
+        self.preload_const(12)
+        self.preload_const(0xC761C23C)
+        self.preload_const(19)
+        self.preload_const(0x165667B1)
+        self.preload_const(5)
+        self.preload_const(0xD3A2646C)
+        self.preload_const(9)
+        self.preload_const(0xFD7046C5)
+        self.preload_const(3)
+        self.preload_const(0xB55A4F09)
+        self.preload_const(16)
+        self.preload_const(0)
+        self.preload_const(1)
+        self.preload_const(2)
+        for i in range(batch_size):
+            self.preload_const(i)
+
+        tmp1 = self.pool.alloc("tmp1")
+        tmp2 = self.pool.alloc("tmp2")
+        tmp3 = self.pool.alloc("tmp3")
         # Scratch space addresses
         init_vars = [
             "rounds",
@@ -167,11 +181,11 @@ class KernelBuilder:
             "inp_indices_p",
             "inp_values_p",
         ]
-        for v in init_vars:
-            self.alloc_scratch(v, 1)
+        input_reg = {}
         for i, v in enumerate(init_vars):
+            input_reg[v] = self.pool.alloc(v, 1)
             self.add("load", ("const", tmp1, i))
-            self.add("load", ("load", self.scratch[v], tmp1))
+            self.add("load", ("load", input_reg[v], tmp1))
 
         zero_const = self.scratch_const(0)
         one_const = self.scratch_const(1)
@@ -188,25 +202,25 @@ class KernelBuilder:
         body = []  # array of slots
 
         # Scalar scratch registers
-        tmp_idx = self.alloc_scratch("tmp_idx")
-        tmp_val = self.alloc_scratch("tmp_val")
-        tmp_node_val = self.alloc_scratch("tmp_node_val")
-        tmp_addr = self.alloc_scratch("tmp_addr")
-        tmp_idx_move = self.alloc_scratch("tmp_idx_move")
+        tmp_idx = self.pool.alloc("tmp_idx")
+        tmp_val = self.pool.alloc("tmp_val")
+        tmp_node_val = self.pool.alloc("tmp_node_val")
+        tmp_addr = self.pool.alloc("tmp_addr")
+        tmp_idx_move = self.pool.alloc("tmp_idx_move")
 
         for round in range(rounds):
             for i in range(batch_size):
                 i_const = self.scratch_const(i)
                 # idx = mem[inp_indices_p + i]
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
+                body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
                 body.append(("load", ("load", tmp_idx, tmp_addr)))
                 body.append(("debug", ("compare", tmp_idx, (round, i, "idx"))))
                 # val = mem[inp_values_p + i]
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const)))
+                body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
                 body.append(("load", ("load", tmp_val, tmp_addr)))
                 body.append(("debug", ("compare", tmp_val, (round, i, "val"))))
                 # node_val = mem[forest_values_p + idx]
-                body.append(("alu", ("+", tmp_addr, self.scratch["forest_values_p"], tmp_idx)))
+                body.append(("alu", ("+", tmp_addr, input_reg["forest_values_p"], tmp_idx)))
                 body.append(("load", ("load", tmp_node_val, tmp_addr)))
                 body.append(("debug", ("compare", tmp_node_val, (round, i, "node_val"))))
                 # val = myhash(val ^ node_val)
@@ -221,14 +235,14 @@ class KernelBuilder:
 
                 body.append(("debug", ("compare", tmp_idx, (round, i, "next_idx"))))
                 # idx = 0 if idx >= n_nodes else idx
-                body.append(("alu", ("<", tmp1, tmp_idx, self.scratch["n_nodes"])))
+                body.append(("alu", ("<", tmp1, tmp_idx, input_reg["n_nodes"])))
                 body.append(("flow", ("select", tmp_idx, tmp1, tmp_idx, zero_const)))
                 body.append(("debug", ("compare", tmp_idx, (round, i, "wrapped_idx"))))
                 # mem[inp_indices_p + i] = idx
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_indices_p"], i_const)))
+                body.append(("alu", ("+", tmp_addr, input_reg["inp_indices_p"], i_const)))
                 body.append(("store", ("store", tmp_addr, tmp_idx)))
                 # mem[inp_values_p + i] = val
-                body.append(("alu", ("+", tmp_addr, self.scratch["inp_values_p"], i_const)))
+                body.append(("alu", ("+", tmp_addr, input_reg["inp_values_p"], i_const)))
                 body.append(("store", ("store", tmp_addr, tmp_val)))
 
         body_instrs = self.build(body)
