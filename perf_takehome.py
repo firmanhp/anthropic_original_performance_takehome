@@ -251,9 +251,10 @@ class KernelBuilder:
 
                 body.append(("debug", ("compare", idx_regstore[i], (round, i, "next_idx"))))
                 # idx = 0 if idx >= n_nodes else idx
+                # ---> idx = cond*idx, cond = idx < n_nodes
                 # mem[inp_indices_p + i] = idx
                 body.append(("alu", ("<", tmp1, idx_regstore[i], input_reg["n_nodes"])))
-                body.append(("flow", ("select", idx_regstore[i], tmp1, idx_regstore[i], zero_const)))
+                body.append(("alu", ("*", idx_regstore[i], idx_regstore[i], tmp1)))
                 body.append(("debug", ("compare", idx_regstore[i], (round, i, "wrapped_idx"))))
 
                 self.pool.free(tmp1)
