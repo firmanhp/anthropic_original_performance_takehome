@@ -25,6 +25,7 @@ class ScratchRegPool:
         self.scratch_free = []
 
     def alloc(self, name=None, length=1):
+        # print(f"firmanhp attemp alloc {length}, current {self.scratch_ptr}")
         if self.scratch_ptr + length >= SCRATCH_SIZE:
             # Cannot extend more
             addr = self.__pop_from_free(length)
