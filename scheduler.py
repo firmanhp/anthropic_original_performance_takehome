@@ -65,38 +65,34 @@ class ScratchRegPool:
 
 
 class Scheduler:
-    def __init__(self, reg_pool: ScratchRegPool):
+    def __init__(self, reg_pool: ScratchRegPool, vliw: bool = False):
         self.pool = reg_pool
-
-    def build(self, single_instructions: list[tuple[Engine, tuple]], vliw: bool = False):
-        if not vliw:
-            ret = []
-            for engine, instr in single_instructions:
-                ret.append({engine: [instr]})
-            return ret
-
+        self.vliw = vliw
         # (last read, last write)
         self.scratch_info = [(-1, -1) for i in range(SCRATCH_SIZE)]
         # [CycleAssignment]
-        self.cycle = []
-        for engine, instr in single_instructions:
-            match engine:
-                case "debug":
-                    self.__sched_debug(instr)
-                case "alu":
-                    self.__sched_alu(instr)
-                case "valu":
-                    self.__sched_valu(instr)
-                case "flow":
-                    self.__sched_flow(instr)
-                case "store":
-                    self.__sched_store(instr)
-                case "load":
-                    self.__sched_load(instr)
-                case _:
-                    raise NotImplementedError(f"Unhandled engine {engine}")
+        self.program = []
 
-        return self.cycle
+    def add(self, engine: Engine, instruction: tuple):
+        if not self.vliw:
+            self.program.append({engine: [instruction]})
+            return
+        
+        match engine:
+            case "debug":
+                self.__sched_debug(instruction)
+            case "alu":
+                self.__sched_alu(instruction)
+            case "valu":
+                self.__sched_valu(instruction)
+            case "flow":
+                self.__sched_flow(instruction)
+            case "store":
+                self.__sched_store(instruction)
+            case "load":
+                self.__sched_load(instruction)
+            case _:
+                raise NotImplementedError(f"Unhandled engine {engine}")
 
     def __sched_alu(self, instruction: tuple):
         _, dest, a1, a2 = instruction
@@ -245,6 +241,12 @@ class Scheduler:
                         self.scratch_info[a] = (cyc, a_w)
                 on_pick_cyc_fn = on_pick_cyc
 
+            case ("pause",):
+                best_cyc = len(self.program) - 1
+                def on_pick_cyc(cyc):
+                    pass
+                on_pick_cyc_fn = on_pick_cyc
+
             case _:
                 raise NotImplementedError(f"Unhandled flow {instruction}")
         assert best_cyc is not None
@@ -391,6 +393,11 @@ class Scheduler:
                 def on_pick_cyc(cyc):
                     self.scratch_info[reg] = (cyc_to_place, reg_w)
                 on_pick_cyc_fn = on_pick_cyc
+            case ("comment", _):
+                cyc_to_place = len(self.program) - 1
+                def on_pick_cyc(cyc):
+                    pass
+                on_pick_cyc_fn = on_pick_cyc
             case _:
                 raise NotImplementedError(f"Unhandled debug {instruction}")
         assert cyc_to_place is not None
@@ -405,7 +412,7 @@ class Scheduler:
         # print("scheduling", engine, instruction, "cyc_start:", cyc_start)
 
         pick_cyc = None
-        for offset, cyc in enumerate(self.cycle[cyc_start:]):
+        for offset, cyc in enumerate(self.program[cyc_start:]):
             if engine not in cyc:
                 pick_cyc = cyc_start + offset
                 break
@@ -416,13 +423,13 @@ class Scheduler:
 
         if pick_cyc is None:
             # New cycle
-            self.cycle.append({})
-            pick_cyc = len(self.cycle) - 1
+            self.program.append({})
+            pick_cyc = len(self.program) - 1
 
-        if engine not in self.cycle[pick_cyc]:
-            self.cycle[pick_cyc][engine] = [instruction]
+        if engine not in self.program[pick_cyc]:
+            self.program[pick_cyc][engine] = [instruction]
         else:
-            self.cycle[pick_cyc][engine].append(instruction)
+            self.program[pick_cyc][engine].append(instruction)
 
         assert pick_cyc is not None
         return pick_cyc

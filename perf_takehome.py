@@ -50,6 +50,7 @@ class KernelBuilder:
         self.pool = ScratchRegPool()
         self.const_map = {}
         self.v_const_map = {}
+        self.scheduler = Scheduler(self.pool, vliw=True)
 
     def debug_info(self):
         return DebugInfo(scratch_map=self.pool.scratch_debug)
@@ -64,100 +65,89 @@ class KernelBuilder:
 
     def preload_const(self, val):
         if val in self.const_map:
-            return []
+            return
         addr = self.pool.alloc(f"CONST[0x{val:X}]")
         self.const_map[val] = addr
-        return [("load", ("const", addr, val))]
+        self.scheduler.add("load", ("const", addr, val))
 
     def preload_v_const(self, val):
         if val in self.v_const_map:
             return []
         addr = self.pool.alloc(f"V_CONST[0x{val:X}]", length=VLEN)
         self.v_const_map[val] = addr
-        return self.preload_const(val) + [("valu", ("vbroadcast", addr, self.scratch_const(val)))]
+        self.preload_const(val)
+        self.scheduler.add("valu", ("vbroadcast", addr, self.scratch_const(val)))
 
     #Robert Jenkins, jenkins32: https://gist.github.com/badboy/6267743#robert-jenkins-32-bit-integer-hash-function
     def build_hash(self, val_hash_reg, tmp1, tmp2, round, i):
-        slots = []
-
         # alu(self, core, op, dest, a1, a2)
-        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x7ED55D16)))) # parity=P
-        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(12)))) # parity=0
-        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2))) # reg = parity=P
-        slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 0))))
+        self.scheduler.add("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x7ED55D16)))
+        self.scheduler.add("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(12)))
+        self.scheduler.add("alu", ("+", val_hash_reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 0)))
 
-        slots.append(("alu", ("^", tmp1, val_hash_reg, self.scratch_const(0xC761C23C)))) # parity=P
-        slots.append(("alu", (">>", tmp2, val_hash_reg, self.scratch_const(19)))) # parity=reg&(1<<19)
-        slots.append(("alu", ("^", val_hash_reg, tmp1, tmp2))) # regparity = P ^ (reg&(1<<19))
-        slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 1))))
+        self.scheduler.add("alu", ("^", tmp1, val_hash_reg, self.scratch_const(0xC761C23C)))
+        self.scheduler.add("alu", (">>", tmp2, val_hash_reg, self.scratch_const(19)))
+        self.scheduler.add("alu", ("^", val_hash_reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 1)))
 
-        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x165667B1)))) # parity=P^1
-        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(5)))) #parity = 0
-        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2))) # parity = P^1
-        slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 2))))
+        self.scheduler.add("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x165667B1)))
+        self.scheduler.add("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(5)))
+        self.scheduler.add("alu", ("+", val_hash_reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 2)))
 
-        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0xD3A2646C)))) # parity=P
-        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(9)))) # parity=0
-        slots.append(("alu", ("^", val_hash_reg, tmp1, tmp2))) # regparity = P
-        slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 3))))
+        self.scheduler.add("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0xD3A2646C)))
+        self.scheduler.add("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(9)))
+        self.scheduler.add("alu", ("^", val_hash_reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 3)))
 
-        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0xFD7046C5)))) #parity=P^1
-        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(3)))) #parity=0
-        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2))) #regparity = P^1
-        slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 4))))
+        self.scheduler.add("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0xFD7046C5)))
+        self.scheduler.add("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(3)))
+        self.scheduler.add("alu", ("+", val_hash_reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 4)))
 
-        slots.append(("alu", ("^", tmp1, val_hash_reg, self.scratch_const(0xB55A4F09))))
-        slots.append(("alu", (">>", tmp2, val_hash_reg, self.scratch_const(16))))
-        slots.append(("alu", ("^", val_hash_reg, tmp1, tmp2)))
-        slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 5))))
-
-        return slots
+        self.scheduler.add("alu", ("^", tmp1, val_hash_reg, self.scratch_const(0xB55A4F09)))
+        self.scheduler.add("alu", (">>", tmp2, val_hash_reg, self.scratch_const(16)))
+        self.scheduler.add("alu", ("^", val_hash_reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 5)))
 
     def build_v_hash(self, reg, tmp1, tmp2, round, i):
-        slots = []
         # valu has "multiply_add", we should exploit this
         # alu(self, core, op, dest, a1, a2)
-        slots.append(("valu", ("+", tmp1, reg, self.scratch_v_const(0x7ED55D16))))
-        slots.append(("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**12), tmp1)))
-        # slots.append(("valu", ("<<", tmp2, reg, self.scratch_v_const(12))))
-        # slots.append(("valu", ("+", reg, tmp1, tmp2)))
-        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 0))))
+        self.scheduler.add("valu", ("+", tmp1, reg, self.scratch_v_const(0x7ED55D16)))
+        self.scheduler.add("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**12), tmp1))
+        # self.scheduler.add("valu", ("<<", tmp2, reg, self.scratch_v_const(12)))
+        # self.scheduler.add("valu", ("+", reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 0)))
 
-        slots.append(("valu", ("^", tmp1, reg, self.scratch_v_const(0xC761C23C))))
-        slots.append(("valu", (">>", tmp2, reg, self.scratch_v_const(19))))
-        slots.append(("valu", ("^", reg, tmp1, tmp2)))
-        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 1))))
+        self.scheduler.add("valu", ("^", tmp1, reg, self.scratch_v_const(0xC761C23C)))
+        self.scheduler.add("valu", (">>", tmp2, reg, self.scratch_v_const(19)))
+        self.scheduler.add("valu", ("^", reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 1)))
 
-        slots.append(("valu", ("+", tmp1, reg, self.scratch_v_const(0x165667B1))))
-        slots.append(("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**5), tmp1)))
-        # slots.append(("valu", ("<<", tmp2, reg, self.scratch_v_const(5)))) #parity = 0
-        # slots.append(("valu", ("+", reg, tmp1, tmp2)))
-        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 2))))
+        self.scheduler.add("valu", ("+", tmp1, reg, self.scratch_v_const(0x165667B1)))
+        self.scheduler.add("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**5), tmp1))
+        # self.scheduler.add("valu", ("<<", tmp2, reg, self.scratch_v_const(5)))) #parity = 
+        # self.scheduler.add("valu", ("+", reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 2)))
 
-        slots.append(("valu", ("+", tmp1, reg, self.scratch_v_const(0xD3A2646C))))
-        slots.append(("valu", ("<<", tmp2, reg, self.scratch_v_const(9))))
-        slots.append(("valu", ("^", reg, tmp1, tmp2)))
-        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 3))))
+        self.scheduler.add("valu", ("+", tmp1, reg, self.scratch_v_const(0xD3A2646C)))
+        self.scheduler.add("valu", ("<<", tmp2, reg, self.scratch_v_const(9)))
+        self.scheduler.add("valu", ("^", reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 3)))
 
-        slots.append(("valu", ("+", tmp1, reg, self.scratch_v_const(0xFD7046C5))))
-        slots.append(("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**3), tmp1)))
-        # slots.append(("valu", ("<<", tmp2, reg, self.scratch_v_const(3))))
-        # slots.append(("valu", ("+", reg, tmp1, tmp2)))
-        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 4))))
+        self.scheduler.add("valu", ("+", tmp1, reg, self.scratch_v_const(0xFD7046C5)))
+        self.scheduler.add("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**3), tmp1))
+        # self.scheduler.add("valu", ("<<", tmp2, reg, self.scratch_v_const(3)))
+        # self.scheduler.add("valu", ("+", reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 4)))
 
-        slots.append(("valu", ("^", tmp1, reg, self.scratch_v_const(0xB55A4F09))))
-        slots.append(("valu", (">>", tmp2, reg, self.scratch_v_const(16))))
-        slots.append(("valu", ("^", reg, tmp1, tmp2)))
-        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 5))))
+        self.scheduler.add("valu", ("^", tmp1, reg, self.scratch_v_const(0xB55A4F09)))
+        self.scheduler.add("valu", (">>", tmp2, reg, self.scratch_v_const(16)))
+        self.scheduler.add("valu", ("^", reg, tmp1, tmp2))
+        self.scheduler.add("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 5)))
 
-        return slots
-
-    def build_kernel(
-        self, forest_height: int, n_nodes: int, batch_size: int, rounds: int
-    ):
-        """
-        Like reference_kernel2 but building actual instructions.
-        """
+    def build_kernel(self, forest_height: int, n_nodes: int, batch_size: int, rounds: int):
         init_vars = [
             "rounds",
             "n_nodes",
@@ -168,50 +158,48 @@ class KernelBuilder:
             "inp_values_p",
         ]
 
-        body = []  # array of slots
-
         # Const preloads
-        body += self.preload_const(0x7ED55D16)
-        body += self.preload_const(12)
-        body += self.preload_const(0xC761C23C)
-        body += self.preload_const(19)
-        body += self.preload_const(0x165667B1)
-        body += self.preload_const(5)
-        body += self.preload_const(0xD3A2646C)
-        body += self.preload_const(9)
-        body += self.preload_const(0xFD7046C5)
-        body += self.preload_const(3)
-        body += self.preload_const(0xB55A4F09)
-        body += self.preload_const(16)
-        body += self.preload_const(0)
-        body += self.preload_const(1)
-        body += self.preload_const(2)
-        body += self.preload_const(VLEN)
+        self.preload_const(0x7ED55D16)
+        self.preload_const(12)
+        self.preload_const(0xC761C23C)
+        self.preload_const(19)
+        self.preload_const(0x165667B1)
+        self.preload_const(5)
+        self.preload_const(0xD3A2646C)
+        self.preload_const(9)
+        self.preload_const(0xFD7046C5)
+        self.preload_const(3)
+        self.preload_const(0xB55A4F09)
+        self.preload_const(16)
+        self.preload_const(0)
+        self.preload_const(1)
+        self.preload_const(2)
+        self.preload_const(VLEN)
 
-        body += self.preload_v_const(0x7ED55D16)
-        body += self.preload_v_const(2**12) # useful for multiply_add
-        body += self.preload_v_const(0xC761C23C)
-        body += self.preload_v_const(19)
-        body += self.preload_v_const(0x165667B1)
-        body += self.preload_v_const(2**5) # useful for multiply_add
-        body += self.preload_v_const(0xD3A2646C)
-        body += self.preload_v_const(9)
-        body += self.preload_v_const(0xFD7046C5)
-        body += self.preload_v_const(2**3) # useful for multiply_add
-        body += self.preload_v_const(0xB55A4F09)
-        body += self.preload_v_const(16)
-        body += self.preload_v_const(0)
-        body += self.preload_v_const(1)
-        body += self.preload_v_const(2)
+        self.preload_v_const(0x7ED55D16)
+        self.preload_v_const(2**12) # useful for multiply_add
+        self.preload_v_const(0xC761C23C)
+        self.preload_v_const(19)
+        self.preload_v_const(0x165667B1)
+        self.preload_v_const(2**5) # useful for multiply_add
+        self.preload_v_const(0xD3A2646C)
+        self.preload_v_const(9)
+        self.preload_v_const(0xFD7046C5)
+        self.preload_v_const(2**3) # useful for multiply_add
+        self.preload_v_const(0xB55A4F09)
+        self.preload_v_const(16)
+        self.preload_v_const(0)
+        self.preload_v_const(1)
+        self.preload_v_const(2)
 
         # Scratch space addresses
 
         input_reg = {}
         for i, v in enumerate(init_vars):
             # consider: replacing const register with tmp <- add_imm ZERO #i
-            body += self.preload_const(i);
+            self.preload_const(i);
             input_reg[v] = self.pool.alloc(v, 1)
-            body.append(("load", ("load", input_reg[v], self.scratch_const(i))))
+            self.scheduler.add("load", ("load", input_reg[v], self.scratch_const(i)))
 
         zero_const = self.scratch_const(0)
         one_const = self.scratch_const(1)
@@ -223,17 +211,17 @@ class KernelBuilder:
         two_v_const = self.scratch_v_const(2)
 
         input_forest_p_v_const = self.pool.alloc(name="V_CONST[FOREST_P]", length=VLEN)
-        body.append(("valu", ("vbroadcast", input_forest_p_v_const, input_reg["forest_values_p"])))
+        self.scheduler.add("valu", ("vbroadcast", input_forest_p_v_const, input_reg["forest_values_p"]))
         input_n_v_const = self.pool.alloc(name="V_CONST[N]", length=VLEN)
-        body.append(("valu", ("vbroadcast", input_n_v_const, input_reg["n_nodes"])))
+        self.scheduler.add("valu", ("vbroadcast", input_n_v_const, input_reg["n_nodes"]))
 
         # Pause instructions are matched up with yield statements in the reference
         # kernel to let you debug at intermediate steps. The testing harness in this
         # file requires these match up to the reference kernel's yields, but the
         # submission harness ignores them.
-        self.instrs.append({"flow": [("pause",)]})
+        self.scheduler.add("flow", ("pause",))
         # Any debug engine instruction is ignored by the submission simulator
-        self.instrs.append({"debug": [("comment", "Starting loop")]})
+        self.scheduler.add("debug", ("comment", "Starting loop"))
 
         # this code only works with small batch sizes! bcs it is not smart enough ;)
         # instead of working in memory, let's put into register
@@ -246,31 +234,31 @@ class KernelBuilder:
         # so much things to prepare for simd, ew
         tmp_addr = self.pool.alloc()
         tmp_addr2 = self.pool.alloc()
-        body.append(("alu", ("+", tmp_addr, zero_const, input_reg["inp_indices_p"])))
-        body.append(("alu", ("+", tmp_addr2, zero_const, input_reg["inp_values_p"])))
+        self.scheduler.add("alu", ("+", tmp_addr, zero_const, input_reg["inp_indices_p"]))
+        self.scheduler.add("alu", ("+", tmp_addr2, zero_const, input_reg["inp_values_p"]))
 
         i = 0
         while i + VLEN - 1 < SIMD_LIMIT:
             idx_v_regstore[i] = self.pool.alloc(f"idx[{i}:{i+VLEN-1}]", length=VLEN)
             val_v_regstore[i] = self.pool.alloc(f"val[{i}:{i+VLEN-1}]", length=VLEN)
-            body.append(("load", ("vload", idx_v_regstore[i], tmp_addr)))
-            body.append(("load", ("vload", val_v_regstore[i], tmp_addr2)))
-            body.append(("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(0, i, "idx"))))
-            body.append(("debug", ("vcompare", val_v_regstore[i], vcompare_keys(0, i, "val"))))
+            self.scheduler.add("load", ("vload", idx_v_regstore[i], tmp_addr))
+            self.scheduler.add("load", ("vload", val_v_regstore[i], tmp_addr2))
+            self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(0, i, "idx")))
+            self.scheduler.add("debug", ("vcompare", val_v_regstore[i], vcompare_keys(0, i, "val")))
 
             i += VLEN
-            body.append(("alu", ("+", tmp_addr, tmp_addr, vlen_const)))
-            body.append(("alu", ("+", tmp_addr2, tmp_addr2, vlen_const)))
+            self.scheduler.add("alu", ("+", tmp_addr, tmp_addr, vlen_const))
+            self.scheduler.add("alu", ("+", tmp_addr2, tmp_addr2, vlen_const))
 
         while i < batch_size:
             idx_regstore[i] = self.pool.alloc(f"idx[{i}]")
             val_regstore[i] = self.pool.alloc(f"val[{i}]")
-            body.append(("load", ("load", idx_regstore[i], tmp_addr)))
-            body.append(("load", ("load", val_regstore[i], tmp_addr2)))
+            self.scheduler.add("load", ("load", idx_regstore[i], tmp_addr))
+            self.scheduler.add("load", ("load", val_regstore[i], tmp_addr2))
 
             i += 1
-            body.append(("alu", ("+", tmp_addr, tmp_addr, one_const)))
-            body.append(("alu", ("+", tmp_addr2, tmp_addr2, one_const)))
+            self.scheduler.add("alu", ("+", tmp_addr, tmp_addr, one_const))
+            self.scheduler.add("alu", ("+", tmp_addr2, tmp_addr2, one_const))
         self.pool.free(tmp_addr)
         self.pool.free(tmp_addr2)
 
@@ -287,36 +275,36 @@ class KernelBuilder:
                 assert val_v_regstore[i] != -1, f"Unaligned access {i}"
 
                 # idx = mem[inp_indices_p + i]
-                body.append(("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "idx"))))
+                self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "idx")))
                 # val = mem[inp_values_p + i]
-                body.append(("debug", ("vcompare", val_v_regstore[i], vcompare_keys(round, i, "val"))))
+                self.scheduler.add("debug", ("vcompare", val_v_regstore[i], vcompare_keys(round, i, "val")))
 
                 # node_val = mem[forest_values_p + idx]
-                body.append(("valu", ("+", tmp_addr, input_forest_p_v_const, idx_v_regstore[i])))
+                self.scheduler.add("valu", ("+", tmp_addr, input_forest_p_v_const, idx_v_regstore[i]))
                 for offset in range(VLEN):
-                    body.append(("load", ("load_offset", tmp_node_val, tmp_addr, offset)))
-                body.append(("debug", ("vcompare", tmp_node_val, vcompare_keys(round, i, "node_val"))))
+                    self.scheduler.add("load", ("load_offset", tmp_node_val, tmp_addr, offset))
+                self.scheduler.add("debug", ("vcompare", tmp_node_val, vcompare_keys(round, i, "node_val")))
 
                 # val = myhash(val ^ node_val)
                 # mem[inp_values_p + i] = val
-                body.append(("valu", ("^", val_v_regstore[i], val_v_regstore[i], tmp_node_val)))
-                body.extend(self.build_v_hash(val_v_regstore[i], tmp1, tmp2, round, i))
-                body.append(("debug", ("vcompare", val_v_regstore[i], vcompare_keys(round, i, "hashed_val"))))
+                self.scheduler.add("valu", ("^", val_v_regstore[i], val_v_regstore[i], tmp_node_val))
+                self.build_v_hash(val_v_regstore[i], tmp1, tmp2, round, i)
+                self.scheduler.add("debug", ("vcompare", val_v_regstore[i], vcompare_keys(round, i, "hashed_val")))
 
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
                 # idx --> 2*idx + (val&1) + 1
-                body.append(("valu", ("<<", idx_v_regstore[i], idx_v_regstore[i], one_v_const)))
-                body.append(("valu", ("&", tmp_idx_move, val_v_regstore[i], one_v_const)))
-                body.append(("valu", ("+", tmp_idx_move, tmp_idx_move, one_v_const)))
-                body.append(("valu", ("+", idx_v_regstore[i], idx_v_regstore[i], tmp_idx_move)))
-                body.append(("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "next_idx"))))
+                self.scheduler.add("valu", ("<<", idx_v_regstore[i], idx_v_regstore[i], one_v_const))
+                self.scheduler.add("valu", ("&", tmp_idx_move, val_v_regstore[i], one_v_const))
+                self.scheduler.add("valu", ("+", tmp_idx_move, tmp_idx_move, one_v_const))
+                self.scheduler.add("valu", ("+", idx_v_regstore[i], idx_v_regstore[i], tmp_idx_move))
+                self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "next_idx")))
 
                 # idx = 0 if idx >= n_nodes else idx
                 # ---> idx = cond*idx, cond = idx < n_nodes
                 # mem[inp_indices_p + i] = idx
-                body.append(("valu", ("<", tmp1, idx_v_regstore[i], input_n_v_const)))
-                body.append(("valu", ("*", idx_v_regstore[i], idx_v_regstore[i], tmp1)))
-                body.append(("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "wrapped_idx"))))
+                self.scheduler.add("valu", ("<", tmp1, idx_v_regstore[i], input_n_v_const))
+                self.scheduler.add("valu", ("*", idx_v_regstore[i], idx_v_regstore[i], tmp1))
+                self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "wrapped_idx")))
 
                 self.pool.free(tmp1)
                 self.pool.free(tmp2)
@@ -337,35 +325,35 @@ class KernelBuilder:
                 assert val_regstore[i] != -1, f"Unexpected scalar access {i}"
 
                 # idx = mem[inp_indices_p + i]
-                body.append(("debug", ("compare", idx_regstore[i], (round, i, "idx"))))
+                self.scheduler.add("debug", ("compare", idx_regstore[i], (round, i, "idx")))
                 # val = mem[inp_values_p + i]
-                body.append(("debug", ("compare", val_regstore[i], (round, i, "val"))))
+                self.scheduler.add("debug", ("compare", val_regstore[i], (round, i, "val")))
 
                 # node_val = mem[forest_values_p + idx]
-                body.append(("alu", ("+", tmp_addr, input_reg["forest_values_p"], idx_regstore[i])))
-                body.append(("load", ("load", tmp_node_val, tmp_addr)))
-                body.append(("debug", ("compare", tmp_node_val, (round, i, "node_val"))))
+                self.scheduler.add("alu", ("+", tmp_addr, input_reg["forest_values_p"], idx_regstore[i]))
+                self.scheduler.add("load", ("load", tmp_node_val, tmp_addr))
+                self.scheduler.add("debug", ("compare", tmp_node_val, (round, i, "node_val")))
 
                 # val = myhash(val ^ node_val)
                 # mem[inp_values_p + i] = val
-                body.append(("alu", ("^", val_regstore[i], val_regstore[i], tmp_node_val)))
-                body.extend(self.build_hash(val_regstore[i], tmp1, tmp2, round, i))
-                body.append(("debug", ("compare", val_regstore[i], (round, i, "hashed_val"))))
+                self.scheduler.add("alu", ("^", val_regstore[i], val_regstore[i], tmp_node_val))
+                self.build_hash(val_regstore[i], tmp1, tmp2, round, i)
+                self.scheduler.add("debug", ("compare", val_regstore[i], (round, i, "hashed_val")))
 
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
                 # idx --> 2*idx + (val&1) + 1
-                body.append(("alu", ("<<", idx_regstore[i], idx_regstore[i], one_const)))
-                body.append(("alu", ("&", tmp_idx_move, val_regstore[i], one_const)))
-                body.append(("alu", ("+", tmp_idx_move, tmp_idx_move, one_const)))
-                body.append(("alu", ("+", idx_regstore[i], idx_regstore[i], tmp_idx_move)))
-                body.append(("debug", ("compare", idx_regstore[i], (round, i, "next_idx"))))
+                self.scheduler.add("alu", ("<<", idx_regstore[i], idx_regstore[i], one_const))
+                self.scheduler.add("alu", ("&", tmp_idx_move, val_regstore[i], one_const))
+                self.scheduler.add("alu", ("+", tmp_idx_move, tmp_idx_move, one_const))
+                self.scheduler.add("alu", ("+", idx_regstore[i], idx_regstore[i], tmp_idx_move))
+                self.scheduler.add("debug", ("compare", idx_regstore[i], (round, i, "next_idx")))
 
                 # idx = 0 if idx >= n_nodes else idx
                 # ---> idx = cond*idx, cond = idx < n_nodes
                 # mem[inp_indices_p + i] = idx
-                body.append(("alu", ("<", tmp1, idx_regstore[i], input_reg["n_nodes"])))
-                body.append(("alu", ("*", idx_regstore[i], idx_regstore[i], tmp1)))
-                body.append(("debug", ("compare", idx_regstore[i], (round, i, "wrapped_idx"))))
+                self.scheduler.add("alu", ("<", tmp1, idx_regstore[i], input_reg["n_nodes"]))
+                self.scheduler.add("alu", ("*", idx_regstore[i], idx_regstore[i], tmp1))
+                self.scheduler.add("debug", ("compare", idx_regstore[i], (round, i, "wrapped_idx")))
 
                 self.pool.free(tmp1)
                 self.pool.free(tmp2)
@@ -378,35 +366,35 @@ class KernelBuilder:
         i = 0
         tmp_addr = self.pool.alloc()
         tmp_addr2 = self.pool.alloc()
-        body.append(("alu", ("+", tmp_addr, zero_const, input_reg["inp_indices_p"])))
-        body.append(("alu", ("+", tmp_addr2, zero_const, input_reg["inp_values_p"])))
+        self.scheduler.add("alu", ("+", tmp_addr, zero_const, input_reg["inp_indices_p"]))
+        self.scheduler.add("alu", ("+", tmp_addr2, zero_const, input_reg["inp_values_p"]))
 
         while i + VLEN - 1 < SIMD_LIMIT:
             assert idx_v_regstore[i] != -1, f"Unaligned access {i}"
             assert val_v_regstore[i] != -1, f"Unaligned access {i}"
             tmp_offset = self.pool.alloc()
-            body.append(("store", ("vstore", tmp_addr, idx_v_regstore[i])))
-            body.append(("store", ("vstore", tmp_addr2, val_v_regstore[i])))
+            self.scheduler.add("store", ("vstore", tmp_addr, idx_v_regstore[i]))
+            self.scheduler.add("store", ("vstore", tmp_addr2, val_v_regstore[i]))
 
             i += VLEN
-            body.append(("alu", ("+", tmp_addr, tmp_addr, vlen_const)))
-            body.append(("alu", ("+", tmp_addr2, tmp_addr2, vlen_const)))
+            self.scheduler.add("alu", ("+", tmp_addr, tmp_addr, vlen_const))
+            self.scheduler.add("alu", ("+", tmp_addr2, tmp_addr2, vlen_const))
 
         while i < batch_size:
             assert idx_regstore[i] != -1, f"Unexpected scalar access {i}"
             assert val_regstore[i] != -1, f"Unexpected scalar access {i}"
-            body.append(("store", ("store", tmp_addr, idx_regstore[i])))
-            body.append(("store", ("store", tmp_addr2, val_regstore[i])))
+            self.scheduler.add("store", ("store", tmp_addr, idx_regstore[i]))
+            self.scheduler.add("store", ("store", tmp_addr2, val_regstore[i]))
 
             i += 1
-            body.append(("alu", ("+", tmp_addr, tmp_addr, one_const)))
-            body.append(("alu", ("+", tmp_addr2, tmp_addr2, one_const)))
+            self.scheduler.add("alu", ("+", tmp_addr, tmp_addr, one_const))
+            self.scheduler.add("alu", ("+", tmp_addr2, tmp_addr2, one_const))
         self.pool.free(tmp_addr)
         self.pool.free(tmp_addr2)
 
-        self.instrs.extend(Scheduler(self.pool).build(body, vliw=True))
         # Required to match with the yield in reference_kernel2
-        self.instrs.append({"flow": [("pause",)]})
+        self.scheduler.add("flow", ("pause",))
+        self.instrs = self.scheduler.program
 
 BASELINE = 147734
 
