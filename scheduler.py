@@ -9,6 +9,8 @@ from copy import deepcopy
 
 # I didn't like their definition of "Instruction"
 CycleAssignment = Instruction
+READ = 0
+WRITE = 1
 
 class ScratchRegPool:
     def __init__(self):
@@ -147,64 +149,53 @@ class Scheduler:
         on_pick_cyc_fn = None
         match instruction:
             case ("vbroadcast", dest, src):
-                dest = self.pool.scratch_parent[dest]
-                src = self.pool.scratch_parent[src]
-                dest_read, dest_write = self.scratch_info[dest]
                 src_read, src_write = self.scratch_info[src]
                 best_cyc = max(
                     # write, must happen after read
-                    dest_read + 1, dest_write + 1,
+                    max(max(info[READ] + 1, info[WRITE] + 1) for info in self.scratch_info[dest:dest+VLEN]),
                     # read must happen after write
                     src_write + 1
                 )
                 def on_pick_cyc(cyc):
-                    self.scratch_info[dest] = (dest_read, cyc)
+                    for i in range(VLEN):
+                        self.scratch_info[dest+i] = (self.scratch_info[dest+i][READ], cyc)
                     if src != dest:
                         self.scratch_info[src] = (cyc, src_write)
                 on_pick_cyc_fn = on_pick_cyc
             case ("multiply_add", dest, a, b, c):
-                dest = self.pool.scratch_parent[dest]
-                a = self.pool.scratch_parent[a]
-                b = self.pool.scratch_parent[b]
-                c = self.pool.scratch_parent[c]
-                dest_read, dest_write = self.scratch_info[dest]
-                a_read, a_write = self.scratch_info[a]
-                b_read, b_write = self.scratch_info[b]
-                c_read, c_write = self.scratch_info[c]
                 best_cyc = max(
                     # write, must happen after read
-                    dest_read + 1, dest_write + 1,
+                    max(max(info[READ] + 1, info[WRITE] + 1) for info in self.scratch_info[dest:dest+VLEN]),
                     # read must happen after write
-                    a_write + 1, b_write + 1, c_write + 1
+                    max(info[WRITE] + 1 for info in self.scratch_info[a:a+VLEN]),
+                    max(info[WRITE] + 1 for info in self.scratch_info[b:b+VLEN]),
+                    max(info[WRITE] + 1 for info in self.scratch_info[c:c+VLEN]),
                 )
                 def on_pick_cyc(cyc):
-                    self.scratch_info[dest] = (dest_read, cyc)
-                    if a != dest:
-                        self.scratch_info[a] = (cyc, a_write)
-                    if b != dest:
-                        self.scratch_info[b] = (cyc, b_write)
-                    if c != dest:
-                        self.scratch_info[c] = (cyc, c_write)
+                    for i in range(VLEN):
+                        self.scratch_info[dest+i] = (self.scratch_info[dest+i][READ], cyc)
+                        if a != dest:
+                            self.scratch_info[a+i] = (cyc, self.scratch_info[a+i][WRITE])
+                        if b != dest:
+                            self.scratch_info[b+i] = (cyc, self.scratch_info[b+i][WRITE])
+                        if c != dest:
+                            self.scratch_info[c+i] = (cyc, self.scratch_info[c+i][WRITE])
                 on_pick_cyc_fn = on_pick_cyc
             case (op, dest, a, b):
-                dest = self.pool.scratch_parent[dest]
-                a = self.pool.scratch_parent[a]
-                b = self.pool.scratch_parent[b]
-                dest_read, dest_write = self.scratch_info[dest]
-                a_read, a_write = self.scratch_info[a]
-                b_read, b_write = self.scratch_info[b]
                 best_cyc = max(
                     # write, must happen after read
-                    dest_read + 1, dest_write + 1,
+                    max(max(info[READ] + 1, info[WRITE] + 1) for info in self.scratch_info[dest:dest+VLEN]),
                     # read must happen after write
-                    a_write + 1, b_write + 1
+                    max(info[WRITE] + 1 for info in self.scratch_info[a:a+VLEN]),
+                    max(info[WRITE] + 1 for info in self.scratch_info[b:b+VLEN])
                 )
                 def on_pick_cyc(cyc):
-                    self.scratch_info[dest] = (dest_read, cyc)
-                    if a != dest:
-                        self.scratch_info[a] = (cyc, a_write)
-                    if b != dest:
-                        self.scratch_info[b] = (cyc, b_write)
+                    for i in range(VLEN):
+                        self.scratch_info[dest+i] = (self.scratch_info[dest+i][READ], cyc)
+                        if a != dest:
+                            self.scratch_info[a+i] = (cyc, self.scratch_info[a+i][WRITE])
+                        if b != dest:
+                            self.scratch_info[b+i] = (cyc, self.scratch_info[b+i][WRITE])
                 on_pick_cyc_fn = on_pick_cyc
             case _:
                 raise NotImplementedError(f"Unhandled valu {instruction}")
@@ -220,10 +211,6 @@ class Scheduler:
         on_pick_cyc_fn = None
         match instruction:
             case ("select", dest, cond, a, b):
-                dest = self.pool.scratch_parent[dest]
-                cond = self.pool.scratch_parent[cond]
-                a = self.pool.scratch_parent[a]
-                b = self.pool.scratch_parent[b]
                 dest_r, dest_w = self.scratch_info[dest]
                 cond_r, cond_w = self.scratch_info[cond]
                 a_r, a_w = self.scratch_info[a]
@@ -248,8 +235,6 @@ class Scheduler:
                 on_pick_cyc_fn = on_pick_cyc
 
             case ("add_imm", dest, a, imm):
-                dest = self.pool.scratch_parent[dest]
-                a = self.pool.scratch_parent[a]
                 dest_r, dest_w = self.scratch_info[dest]
                 a_r, a_w = self.scratch_info[a]
 
@@ -283,8 +268,6 @@ class Scheduler:
         on_pick_cyc_fn = None
         match instruction:
             case ("load", dest, addr):
-                dest = self.pool.scratch_parent[dest]
-                addr = self.pool.scratch_parent[addr]
                 dest_r, dest_w = self.scratch_info[dest]
                 addr_r, addr_w = self.scratch_info[addr]
 
@@ -300,8 +283,6 @@ class Scheduler:
                         self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
             case ("load_offset", dest, addr, offset):
-                dest = self.pool.scratch_parent[dest]
-                addr = self.pool.scratch_parent[addr]
                 dest_r, dest_w = self.scratch_info[dest]
                 addr_r, addr_w = self.scratch_info[addr]
 
@@ -317,24 +298,21 @@ class Scheduler:
                         self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
             case ("vload", dest, addr):
-                dest = self.pool.scratch_parent[dest]
-                addr = self.pool.scratch_parent[addr]
-                dest_r, dest_w = self.scratch_info[dest]
                 addr_r, addr_w = self.scratch_info[addr]
 
                 best_cyc = max(
-                    # write must happen after read
-                    dest_r + 1, dest_w + 1,
+                    # write, must happen after read
+                    max(max(info[READ] + 1, info[WRITE] + 1) for info in self.scratch_info[dest:dest+VLEN]),
                     # read must happen after write
                     addr_w + 1
                 )
                 def on_pick_cyc(cyc):
-                    self.scratch_info[dest] = (dest_r, cyc)
+                    for i in range(VLEN):
+                        self.scratch_info[dest+i] = (self.scratch_info[dest+i][READ], cyc)
                     if addr != dest:
                         self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
             case ("const", dest, val):
-                dest = self.pool.scratch_parent[dest]
                 dest_r, dest_w = self.scratch_info[dest]
 
                 best_cyc = max(
@@ -372,19 +350,17 @@ class Scheduler:
                     self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
             case ("vstore", dest, addr):
-                dest = self.pool.scratch_parent[dest]
-                addr = self.pool.scratch_parent[addr]
                 dest_r, dest_w = self.scratch_info[dest]
-                addr_r, addr_w = self.scratch_info[addr]
 
                 best_cyc = max(
                     # read must happen after write
                     dest_w + 1,
-                    addr_w + 1
+                    max(info[WRITE] + 1 for info in self.scratch_info[addr:addr+VLEN]),
                 )
                 def on_pick_cyc(cyc):
                     self.scratch_info[dest] = (cyc, dest_w)
-                    self.scratch_info[addr] = (cyc, addr_w)
+                    for i in range(VLEN):
+                        self.scratch_info[addr+i] = (cyc, self.scratch_info[addr+i][WRITE])
                 on_pick_cyc_fn = on_pick_cyc
             case _:
                 raise NotImplementedError(f"Unhandled store {instruction}")
@@ -401,15 +377,12 @@ class Scheduler:
         on_pick_cyc_fn = None
         match instruction:
             case ("compare", reg, _):
-                reg = self.pool.scratch_parent[reg]
                 reg_r, reg_w = self.scratch_info[reg]
                 cyc_to_place = reg_w + 1
                 def on_pick_cyc(cyc):
                     self.scratch_info[reg] = (cyc_to_place, reg_w)
                 on_pick_cyc_fn = on_pick_cyc
             case ("vcompare", reg, _):
-                # print('firmanhp vcompare', reg, '/', self.pool.scratch_debug[reg][0], '->', self.pool.scratch_parent[reg], '->', self.scratch_info[reg], instruction)
-                reg = self.pool.scratch_parent[reg]
                 reg_r, reg_w = self.scratch_info[reg]
                 cyc_to_place = reg_w + 1
                 # print('firmanhp put in', cyc_to_place)
