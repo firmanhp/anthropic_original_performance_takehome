@@ -39,19 +39,28 @@ from problem import (
 
 from scheduler import (ScratchRegPool, Scheduler)
 
+def vcompare_keys(round, i, *rest):
+    ret = tuple((round, k, *rest) for k in range(i, i+VLEN))
+    return ret
+
 
 class KernelBuilder:
     def __init__(self):
         self.instrs = []
         self.pool = ScratchRegPool()
         self.const_map = {}
+        self.v_const_map = {}
 
     def debug_info(self):
         return DebugInfo(scratch_map=self.pool.scratch_debug)
 
-    def scratch_const(self, val, name=None):
+    def scratch_const(self, val):
         assert val in self.const_map, f"Unreserved const: {val}"
         return self.const_map[val]
+
+    def scratch_v_const(self, val):
+        assert val in self.v_const_map, f"Unreserved v_const: {val}"
+        return self.v_const_map[val]
 
     def preload_const(self, val):
         if val in self.const_map:
@@ -60,34 +69,41 @@ class KernelBuilder:
         self.const_map[val] = addr
         return [("load", ("const", addr, val))]
 
+    def preload_v_const(self, val):
+        if val in self.v_const_map:
+            return []
+        addr = self.pool.alloc(f"V_CONST[0x{val:X}]", length=VLEN)
+        self.v_const_map[val] = addr
+        return self.preload_const(val) + [("valu", ("vbroadcast", addr, self.scratch_const(val)))]
+
     #Robert Jenkins, jenkins32: https://gist.github.com/badboy/6267743#robert-jenkins-32-bit-integer-hash-function
     def build_hash(self, val_hash_reg, tmp1, tmp2, round, i):
         slots = []
 
         # alu(self, core, op, dest, a1, a2)
-        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x7ED55D16))))
-        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(12))))
-        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2)))
+        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x7ED55D16)))) # parity=P
+        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(12)))) # parity=0
+        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2))) # reg = parity=P
         slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 0))))
-        
-        slots.append(("alu", ("^", tmp1, val_hash_reg, self.scratch_const(0xC761C23C))))
-        slots.append(("alu", (">>", tmp2, val_hash_reg, self.scratch_const(19))))
-        slots.append(("alu", ("^", val_hash_reg, tmp1, tmp2)))
+
+        slots.append(("alu", ("^", tmp1, val_hash_reg, self.scratch_const(0xC761C23C)))) # parity=P
+        slots.append(("alu", (">>", tmp2, val_hash_reg, self.scratch_const(19)))) # parity=reg&(1<<19)
+        slots.append(("alu", ("^", val_hash_reg, tmp1, tmp2))) # regparity = P ^ (reg&(1<<19))
         slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 1))))
 
-        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x165667B1))))
-        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(5))))
-        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2)))
+        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x165667B1)))) # parity=P^1
+        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(5)))) #parity = 0
+        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2))) # parity = P^1
         slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 2))))
 
-        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0xD3A2646C))))
-        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(9))))
-        slots.append(("alu", ("^", val_hash_reg, tmp1, tmp2)))
+        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0xD3A2646C)))) # parity=P
+        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(9)))) # parity=0
+        slots.append(("alu", ("^", val_hash_reg, tmp1, tmp2))) # regparity = P
         slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 3))))
 
-        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0xFD7046C5))))
-        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(3))))
-        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2)))
+        slots.append(("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0xFD7046C5)))) #parity=P^1
+        slots.append(("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(3)))) #parity=0
+        slots.append(("alu", ("+", val_hash_reg, tmp1, tmp2))) #regparity = P^1
         slots.append(("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 4))))
 
         slots.append(("alu", ("^", tmp1, val_hash_reg, self.scratch_const(0xB55A4F09))))
@@ -97,12 +113,50 @@ class KernelBuilder:
 
         return slots
 
+    def build_v_hash(self, reg, tmp1, tmp2, round, i):
+        slots = []
+        # valu has "multiply_add", we should exploit this
+        # alu(self, core, op, dest, a1, a2)
+        slots.append(("valu", ("+", tmp1, reg, self.scratch_v_const(0x7ED55D16))))
+        slots.append(("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**12), tmp1)))
+        # slots.append(("valu", ("<<", tmp2, reg, self.scratch_v_const(12))))
+        # slots.append(("valu", ("+", reg, tmp1, tmp2)))
+        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 0))))
+
+        slots.append(("valu", ("^", tmp1, reg, self.scratch_v_const(0xC761C23C))))
+        slots.append(("valu", (">>", tmp2, reg, self.scratch_v_const(19))))
+        slots.append(("valu", ("^", reg, tmp1, tmp2)))
+        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 1))))
+
+        slots.append(("valu", ("+", tmp1, reg, self.scratch_v_const(0x165667B1))))
+        slots.append(("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**5), tmp1)))
+        # slots.append(("valu", ("<<", tmp2, reg, self.scratch_v_const(5)))) #parity = 0
+        # slots.append(("valu", ("+", reg, tmp1, tmp2)))
+        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 2))))
+
+        slots.append(("valu", ("+", tmp1, reg, self.scratch_v_const(0xD3A2646C))))
+        slots.append(("valu", ("<<", tmp2, reg, self.scratch_v_const(9))))
+        slots.append(("valu", ("^", reg, tmp1, tmp2)))
+        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 3))))
+
+        slots.append(("valu", ("+", tmp1, reg, self.scratch_v_const(0xFD7046C5))))
+        slots.append(("valu", ("multiply_add", reg, reg, self.scratch_v_const(2**3), tmp1)))
+        # slots.append(("valu", ("<<", tmp2, reg, self.scratch_v_const(3))))
+        # slots.append(("valu", ("+", reg, tmp1, tmp2)))
+        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 4))))
+
+        slots.append(("valu", ("^", tmp1, reg, self.scratch_v_const(0xB55A4F09))))
+        slots.append(("valu", (">>", tmp2, reg, self.scratch_v_const(16))))
+        slots.append(("valu", ("^", reg, tmp1, tmp2)))
+        slots.append(("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 5))))
+
+        return slots
+
     def build_kernel(
         self, forest_height: int, n_nodes: int, batch_size: int, rounds: int
     ):
         """
         Like reference_kernel2 but building actual instructions.
-        Scalar implementation using only scalar ALU and load/store.
         """
         init_vars = [
             "rounds",
@@ -132,6 +186,23 @@ class KernelBuilder:
         body += self.preload_const(0)
         body += self.preload_const(1)
         body += self.preload_const(2)
+        body += self.preload_const(VLEN)
+
+        body += self.preload_v_const(0x7ED55D16)
+        body += self.preload_v_const(2**12) # useful for multiply_add
+        body += self.preload_v_const(0xC761C23C)
+        body += self.preload_v_const(19)
+        body += self.preload_v_const(0x165667B1)
+        body += self.preload_v_const(2**5) # useful for multiply_add
+        body += self.preload_v_const(0xD3A2646C)
+        body += self.preload_v_const(9)
+        body += self.preload_v_const(0xFD7046C5)
+        body += self.preload_v_const(2**3) # useful for multiply_add
+        body += self.preload_v_const(0xB55A4F09)
+        body += self.preload_v_const(16)
+        body += self.preload_v_const(0)
+        body += self.preload_v_const(1)
+        body += self.preload_v_const(2)
 
         # Scratch space addresses
 
@@ -145,6 +216,16 @@ class KernelBuilder:
         zero_const = self.scratch_const(0)
         one_const = self.scratch_const(1)
         two_const = self.scratch_const(2)
+        vlen_const = self.scratch_const(VLEN)
+
+        zero_v_const = self.scratch_v_const(0)
+        one_v_const = self.scratch_v_const(1)
+        two_v_const = self.scratch_v_const(2)
+
+        input_forest_p_v_const = self.pool.alloc(name="V_CONST[FOREST_P]", length=VLEN)
+        body.append(("valu", ("vbroadcast", input_forest_p_v_const, input_reg["forest_values_p"])))
+        input_n_v_const = self.pool.alloc(name="V_CONST[N]", length=VLEN)
+        body.append(("valu", ("vbroadcast", input_n_v_const, input_reg["n_nodes"])))
 
         # Pause instructions are matched up with yield statements in the reference
         # kernel to let you debug at intermediate steps. The testing harness in this
@@ -156,30 +237,104 @@ class KernelBuilder:
 
         # this code only works with small batch sizes! bcs it is not smart enough ;)
         # instead of working in memory, let's put into register
-        idx_regstore = []
-        val_regstore = []
+        idx_regstore = [-1] * batch_size
+        val_regstore = [-1] * batch_size
+        idx_v_regstore = [-1] * batch_size
+        val_v_regstore = [-1] * batch_size
+        SIMD_LIMIT = batch_size
+
+        # so much things to prepare for simd, ew
         tmp_addr = self.pool.alloc()
         tmp_addr2 = self.pool.alloc()
-        for i in range(batch_size):
-            idx_regstore.append(self.pool.alloc(f"idx[{i}]"))
-            val_regstore.append(self.pool.alloc(f"val[{i}]"))
+        body.append(("alu", ("+", tmp_addr, zero_const, input_reg["inp_indices_p"])))
+        body.append(("alu", ("+", tmp_addr2, zero_const, input_reg["inp_values_p"])))
 
-            body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_indices_p"], i)))
+        i = 0
+        while i + VLEN - 1 < SIMD_LIMIT:
+            idx_v_regstore[i] = self.pool.alloc(f"idx[{i}:{i+VLEN-1}]", length=VLEN)
+            val_v_regstore[i] = self.pool.alloc(f"val[{i}:{i+VLEN-1}]", length=VLEN)
+            body.append(("load", ("vload", idx_v_regstore[i], tmp_addr)))
+            body.append(("load", ("vload", val_v_regstore[i], tmp_addr2)))
+            body.append(("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(0, i, "idx"))))
+            body.append(("debug", ("vcompare", val_v_regstore[i], vcompare_keys(0, i, "val"))))
+
+            i += VLEN
+            body.append(("alu", ("+", tmp_addr, tmp_addr, vlen_const)))
+            body.append(("alu", ("+", tmp_addr2, tmp_addr2, vlen_const)))
+
+        while i < batch_size:
+            idx_regstore[i] = self.pool.alloc(f"idx[{i}]")
+            val_regstore[i] = self.pool.alloc(f"val[{i}]")
             body.append(("load", ("load", idx_regstore[i], tmp_addr)))
-
-            body.append(("flow", ("add_imm", tmp_addr2, input_reg["inp_values_p"], i)))
             body.append(("load", ("load", val_regstore[i], tmp_addr2)))
+
+            i += 1
+            body.append(("alu", ("+", tmp_addr, tmp_addr, one_const)))
+            body.append(("alu", ("+", tmp_addr2, tmp_addr2, one_const)))
         self.pool.free(tmp_addr)
         self.pool.free(tmp_addr2)
 
         for round in range(rounds):
-            for i in range(batch_size):
+            i = 0
+            while i + VLEN - 1 < SIMD_LIMIT:
+                # Vector scratch registers
+                tmp_addr = self.pool.alloc(length=VLEN)
+                tmp1 = self.pool.alloc(length=VLEN)
+                tmp2 = self.pool.alloc(length=VLEN)
+                tmp_node_val = self.pool.alloc(length=VLEN)
+                tmp_idx_move = self.pool.alloc(length=VLEN)
+                assert idx_v_regstore[i] != -1, f"Unaligned access {i}"
+                assert val_v_regstore[i] != -1, f"Unaligned access {i}"
+
+                # idx = mem[inp_indices_p + i]
+                body.append(("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "idx"))))
+                # val = mem[inp_values_p + i]
+                body.append(("debug", ("vcompare", val_v_regstore[i], vcompare_keys(round, i, "val"))))
+
+                # node_val = mem[forest_values_p + idx]
+                body.append(("valu", ("+", tmp_addr, input_forest_p_v_const, idx_v_regstore[i])))
+                for offset in range(VLEN):
+                    body.append(("load", ("load_offset", tmp_node_val, tmp_addr, offset)))
+                body.append(("debug", ("vcompare", tmp_node_val, vcompare_keys(round, i, "node_val"))))
+
+                # val = myhash(val ^ node_val)
+                # mem[inp_values_p + i] = val
+                body.append(("valu", ("^", val_v_regstore[i], val_v_regstore[i], tmp_node_val)))
+                body.extend(self.build_v_hash(val_v_regstore[i], tmp1, tmp2, round, i))
+                body.append(("debug", ("vcompare", val_v_regstore[i], vcompare_keys(round, i, "hashed_val"))))
+
+                # idx = 2*idx + (1 if val % 2 == 0 else 2)
+                # idx --> 2*idx + (val&1) + 1
+                body.append(("valu", ("<<", idx_v_regstore[i], idx_v_regstore[i], one_v_const)))
+                body.append(("valu", ("&", tmp_idx_move, val_v_regstore[i], one_v_const)))
+                body.append(("valu", ("+", tmp_idx_move, tmp_idx_move, one_v_const)))
+                body.append(("valu", ("+", idx_v_regstore[i], idx_v_regstore[i], tmp_idx_move)))
+                body.append(("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "next_idx"))))
+
+                # idx = 0 if idx >= n_nodes else idx
+                # ---> idx = cond*idx, cond = idx < n_nodes
+                # mem[inp_indices_p + i] = idx
+                body.append(("valu", ("<", tmp1, idx_v_regstore[i], input_n_v_const)))
+                body.append(("valu", ("*", idx_v_regstore[i], idx_v_regstore[i], tmp1)))
+                body.append(("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "wrapped_idx"))))
+
+                self.pool.free(tmp1)
+                self.pool.free(tmp2)
+                self.pool.free(tmp_node_val)
+                self.pool.free(tmp_addr)
+                self.pool.free(tmp_idx_move)
+                i += VLEN
+
+            while i < batch_size:
                 # Scalar scratch registers
                 tmp1 = self.pool.alloc()
                 tmp2 = self.pool.alloc()
                 tmp_node_val = self.pool.alloc()
                 tmp_addr = self.pool.alloc()
                 tmp_idx_move = self.pool.alloc()
+
+                assert idx_regstore[i] != -1, f"Unexpected scalar access {i}"
+                assert val_regstore[i] != -1, f"Unexpected scalar access {i}"
 
                 # idx = mem[inp_indices_p + i]
                 body.append(("debug", ("compare", idx_regstore[i], (round, i, "idx"))))
@@ -217,16 +372,35 @@ class KernelBuilder:
                 self.pool.free(tmp_node_val)
                 self.pool.free(tmp_addr)
                 self.pool.free(tmp_idx_move)
+                i += 1
 
         # Write into memory
+        i = 0
         tmp_addr = self.pool.alloc()
         tmp_addr2 = self.pool.alloc()
-        for i in range(batch_size):
-            body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_indices_p"], i)))
-            body.append(("store", ("store", tmp_addr, idx_regstore[i])))
+        body.append(("alu", ("+", tmp_addr, zero_const, input_reg["inp_indices_p"])))
+        body.append(("alu", ("+", tmp_addr2, zero_const, input_reg["inp_values_p"])))
 
-            body.append(("flow", ("add_imm", tmp_addr2, input_reg["inp_values_p"], i)))
+        while i + VLEN - 1 < SIMD_LIMIT:
+            assert idx_v_regstore[i] != -1, f"Unaligned access {i}"
+            assert val_v_regstore[i] != -1, f"Unaligned access {i}"
+            tmp_offset = self.pool.alloc()
+            body.append(("store", ("vstore", tmp_addr, idx_v_regstore[i])))
+            body.append(("store", ("vstore", tmp_addr2, val_v_regstore[i])))
+
+            i += VLEN
+            body.append(("alu", ("+", tmp_addr, tmp_addr, vlen_const)))
+            body.append(("alu", ("+", tmp_addr2, tmp_addr2, vlen_const)))
+
+        while i < batch_size:
+            assert idx_regstore[i] != -1, f"Unexpected scalar access {i}"
+            assert val_regstore[i] != -1, f"Unexpected scalar access {i}"
+            body.append(("store", ("store", tmp_addr, idx_regstore[i])))
             body.append(("store", ("store", tmp_addr2, val_regstore[i])))
+
+            i += 1
+            body.append(("alu", ("+", tmp_addr, tmp_addr, one_const)))
+            body.append(("alu", ("+", tmp_addr2, tmp_addr2, one_const)))
         self.pool.free(tmp_addr)
         self.pool.free(tmp_addr2)
 

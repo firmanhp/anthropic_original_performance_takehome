@@ -20,7 +20,7 @@ class ScratchRegPool:
         # This will be useful for the scheduler later on.
         self.scratch_parent = [i for i in range(SCRATCH_SIZE)]
         self.const_map = {}
-        
+
         self.scratch_free = []
 
     def alloc(self, name=None, length=1):
@@ -67,7 +67,7 @@ class ScratchRegPool:
 class Scheduler:
     def __init__(self, reg_pool: ScratchRegPool):
         self.pool = reg_pool
-    
+
     def build(self, single_instructions: list[tuple[Engine, tuple]], vliw: bool = False):
         if not vliw:
             ret = []
@@ -112,7 +112,7 @@ class Scheduler:
             dest_read + 1, dest_write + 1,
             # read must happen after write
             a1_write + 1,
-            a2_write + 1) 
+            a2_write + 1)
 
         pick_cyc = self.__sched('alu', instruction, best_cyc)
 
@@ -274,6 +274,23 @@ class Scheduler:
                     if addr != dest:
                         self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
+            case ("load_offset", dest, addr, offset):
+                dest = self.pool.scratch_parent[dest]
+                addr = self.pool.scratch_parent[addr]
+                dest_r, dest_w = self.scratch_info[dest]
+                addr_r, addr_w = self.scratch_info[addr]
+
+                best_cyc = max(
+                    # write must happen after read
+                    dest_r + 1, dest_w + 1,
+                    # read must happen after write
+                    addr_w + 1
+                )
+                def on_pick_cyc(cyc):
+                    self.scratch_info[dest] = (dest_r, cyc)
+                    if addr != dest:
+                        self.scratch_info[addr] = (cyc, addr_w)
+                on_pick_cyc_fn = on_pick_cyc
             case ("vload", dest, addr):
                 dest = self.pool.scratch_parent[dest]
                 addr = self.pool.scratch_parent[addr]
@@ -401,7 +418,7 @@ class Scheduler:
             # New cycle
             self.cycle.append({})
             pick_cyc = len(self.cycle) - 1
-        
+
         if engine not in self.cycle[pick_cyc]:
             self.cycle[pick_cyc][engine] = [instruction]
         else:
@@ -412,4 +429,4 @@ class Scheduler:
 
 
 
-    
+
