@@ -177,7 +177,6 @@ class KernelBuilder:
                 # Scalar scratch registers
                 tmp1 = self.pool.alloc()
                 tmp2 = self.pool.alloc()
-                tmp_idx = self.pool.alloc()
                 tmp_node_val = self.pool.alloc()
                 tmp_addr = self.pool.alloc()
                 tmp_idx_move = self.pool.alloc()
@@ -199,12 +198,13 @@ class KernelBuilder:
                 body.append(("debug", ("compare", val_regstore[i], (round, i, "hashed_val"))))
 
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                body.append(("alu", ("<<", tmp_idx, idx_regstore[i], one_const)))
+                # idx --> 2*idx + (val&1) + 1
+                body.append(("alu", ("<<", idx_regstore[i], idx_regstore[i], one_const)))
                 body.append(("alu", ("&", tmp_idx_move, val_regstore[i], one_const)))
                 body.append(("alu", ("+", tmp_idx_move, tmp_idx_move, one_const)))
-                body.append(("alu", ("+", idx_regstore[i], tmp_idx, tmp_idx_move)))
-
+                body.append(("alu", ("+", idx_regstore[i], idx_regstore[i], tmp_idx_move)))
                 body.append(("debug", ("compare", idx_regstore[i], (round, i, "next_idx"))))
+
                 # idx = 0 if idx >= n_nodes else idx
                 # ---> idx = cond*idx, cond = idx < n_nodes
                 # mem[inp_indices_p + i] = idx
@@ -214,7 +214,6 @@ class KernelBuilder:
 
                 self.pool.free(tmp1)
                 self.pool.free(tmp2)
-                self.pool.free(tmp_idx)
                 self.pool.free(tmp_node_val)
                 self.pool.free(tmp_addr)
                 self.pool.free(tmp_idx_move)
