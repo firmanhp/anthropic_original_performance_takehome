@@ -31,12 +31,19 @@ class ScratchRegPool:
             return addr
 
         addr = self.scratch_ptr
-        if name is not None:
-            self.scratch[name] = addr
+        if name is None:
+            name = f"ANON[{addr}]"
+        self.scratch[name] = addr
         self.scratch_debug[addr] = (name, length)
-        self.scratch_ptr += length
+        self.scratch_parent[addr] = addr
         for i in range(length):
+            # if i > 0:
+            #     comp_name = f"{name}+{i}"
+            #     self.scratch[comp_name] = addr + i
+            #     self.scratch_debug[addr + i] = (comp_name, 1)
             self.scratch_parent[addr + i] = addr
+
+        self.scratch_ptr += length
         return addr
 
     def free(self, addr):
@@ -67,7 +74,7 @@ class Scheduler:
             for engine, instr in single_instructions:
                 ret.append({engine: [instr]})
             return ret
-        
+
         # (last read, last write)
         self.scratch_info = [(-1, -1) for i in range(SCRATCH_SIZE)]
         # [CycleAssignment]
@@ -156,7 +163,7 @@ class Scheduler:
                     if a != dest:
                         self.scratch_info[a] = (cyc, a_write)
                     if b != dest:
-                        self.scratch_info[a] = (cyc, b_write)
+                        self.scratch_info[b] = (cyc, b_write)
                     if c != dest:
                         self.scratch_info[c] = (cyc, c_write)
                 on_pick_cyc_fn = on_pick_cyc
@@ -178,7 +185,7 @@ class Scheduler:
                     if a != dest:
                         self.scratch_info[a] = (cyc, a_write)
                     if b != dest:
-                        self.scratch_info[a] = (cyc, b_write)
+                        self.scratch_info[b] = (cyc, b_write)
                 on_pick_cyc_fn = on_pick_cyc
             case _:
                 raise NotImplementedError(f"Unhandled valu {instruction}")
@@ -359,9 +366,11 @@ class Scheduler:
                     self.scratch_info[reg] = (cyc_to_place, reg_w)
                 on_pick_cyc_fn = on_pick_cyc
             case ("vcompare", reg, _):
+                # print('firmanhp vcompare', reg, '/', self.pool.scratch_debug[reg][0], '->', self.pool.scratch_parent[reg], '->', self.scratch_info[reg], instruction)
                 reg = self.pool.scratch_parent[reg]
                 reg_r, reg_w = self.scratch_info[reg]
                 cyc_to_place = reg_w + 1
+                # print('firmanhp put in', cyc_to_place)
                 def on_pick_cyc(cyc):
                     self.scratch_info[reg] = (cyc_to_place, reg_w)
                 on_pick_cyc_fn = on_pick_cyc
@@ -376,6 +385,7 @@ class Scheduler:
 
     def __sched(self, engine: Engine, instruction: tuple, cyc_start: int):
         assert engine in SLOT_LIMITS, f"Unknown eng {engine}"
+        # print("scheduling", engine, instruction, "cyc_start:", cyc_start)
 
         pick_cyc = None
         for offset, cyc in enumerate(self.cycle[cyc_start:]):
@@ -385,6 +395,7 @@ class Scheduler:
             if len(cyc[engine]) < SLOT_LIMITS[engine]:
                 pick_cyc = cyc_start + offset
                 break
+            assert engine != "debug", f"debug full??? {len(cyc[engine])}"
 
         if pick_cyc is None:
             # New cycle
