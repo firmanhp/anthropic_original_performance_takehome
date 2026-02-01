@@ -69,6 +69,8 @@ class Scheduler:
                     self.__sched_debug(instr)
                 case "alu":
                     self.__sched_alu(instr)
+                case "valu":
+                    self.__sched_valu(instr)
                 case "flow":
                     self.__sched_flow(instr)
                 case "store":
@@ -102,6 +104,69 @@ class Scheduler:
             self.scratch_info[a1] = (pick_cyc, a1_write)
         if a2 != dest:
             self.scratch_info[a2] = (pick_cyc, a2_write)
+
+    def __sched_valu(self, instruction: tuple):
+        best_cyc = None
+        on_pick_cyc_fn = None
+        match instruction:
+            case ("vbroadcast", dest, src):
+                dest_read, dest_write = self.scratch_info[dest]
+                src_read, src_write = self.scratch_info[src]
+                best_cyc = max(
+                    # write, must happen after read
+                    dest_read + 1, dest_write + 1,
+                    # read must happen after write
+                    src_write + 1
+                )
+                def on_pick_cyc(cyc):
+                    self.scratch_info[dest] = (dest_read, cyc)
+                    if src != dest:
+                        self.scratch_info[src] = (cyc, src_write)
+                on_pick_cyc_fn = on_pick_cyc
+            case ("multiply_add", dest, a, b, c):
+                dest_read, dest_write = self.scratch_info[dest]
+                a_read, a_write = self.scratch_info[a]
+                b_read, b_write = self.scratch_info[b]
+                c_read, c_write = self.scratch_info[c]
+                best_cyc = max(
+                    # write, must happen after read
+                    dest_read + 1, dest_write + 1,
+                    # read must happen after write
+                    a_write + 1, b_write + 1, c_write + 1
+                )
+                def on_pick_cyc(cyc):
+                    self.scratch_info[dest] = (dest_read, cyc)
+                    if a != dest:
+                        self.scratch_info[a] = (cyc, a_write)
+                    if b != dest:
+                        self.scratch_info[a] = (cyc, b_write)
+                    if c != dest:
+                        self.scratch_info[c] = (cyc, c_write)
+                on_pick_cyc_fn = on_pick_cyc
+            case (op, dest, a, b):
+                dest_read, dest_write = self.scratch_info[dest]
+                a_read, a_write = self.scratch_info[a]
+                b_read, b_write = self.scratch_info[b]
+                best_cyc = max(
+                    # write, must happen after read
+                    dest_read + 1, dest_write + 1,
+                    # read must happen after write
+                    a_write + 1, b_write + 1
+                )
+                def on_pick_cyc(cyc):
+                    self.scratch_info[dest] = (dest_read, cyc)
+                    if a != dest:
+                        self.scratch_info[a] = (cyc, a_write)
+                    if b != dest:
+                        self.scratch_info[a] = (cyc, b_write)
+                on_pick_cyc_fn = on_pick_cyc
+            case _:
+                raise NotImplementedError(f"Unhandled valu {instruction}")
+        assert best_cyc is not None
+        assert on_pick_cyc_fn is not None
+
+        pick_cyc = self.__sched('valu', instruction, best_cyc)
+        on_pick_cyc_fn(pick_cyc)
 
     def __sched_flow(self, instruction: tuple):
         best_cyc = None
