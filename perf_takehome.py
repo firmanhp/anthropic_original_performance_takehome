@@ -293,9 +293,8 @@ class KernelBuilder:
 
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
                 # idx --> 2*idx + (val&1) + 1
-                self.scheduler.add("valu", ("<<", idx_v_regstore[i], idx_v_regstore[i], one_v_const))
+                self.scheduler.add("valu", ("multiply_add", idx_v_regstore[i], idx_v_regstore[i], two_v_const, one_v_const))
                 self.scheduler.add("valu", ("&", tmp_idx_move, val_v_regstore[i], one_v_const))
-                self.scheduler.add("valu", ("+", tmp_idx_move, tmp_idx_move, one_v_const))
                 self.scheduler.add("valu", ("+", idx_v_regstore[i], idx_v_regstore[i], tmp_idx_move))
                 self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "next_idx")))
 
