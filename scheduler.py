@@ -5,6 +5,7 @@ from problem import (
     VLEN,
     Engine
 )
+from copy import deepcopy
 
 # I didn't like their definition of "Instruction"
 CycleAssignment = Instruction
@@ -19,8 +20,6 @@ class ScratchRegPool:
         # If address = k, and len = VLEN, then parent[k..k+VLEN-1] = k
         # This will be useful for the scheduler later on.
         self.scratch_parent = [i for i in range(SCRATCH_SIZE)]
-        self.const_map = {}
-
         self.scratch_free = []
 
     def alloc(self, name=None, length=1):
@@ -63,6 +62,21 @@ class ScratchRegPool:
             return None
         return self.scratch_free.pop(i)
 
+    def snapshot(self):
+        return {
+            'scratch': deepcopy(self.scratch),
+            'scratch_debug': deepcopy(self.scratch_debug),
+            'scratch_ptr': self.scratch_ptr,
+            'scratch_parent': deepcopy(self.scratch_parent),
+            'scratch_free': deepcopy(self.scratch_free)}
+
+    def load_snapshot(self, snapshot: dict):
+        self.scratch = snapshot['scratch']
+        self.scratch_debug = snapshot['scratch_debug']
+        self.scratch_ptr = snapshot['scratch_ptr']
+        self.scratch_parent = snapshot['scratch_parent']
+        self.scratch_free = snapshot['scratch_free']
+
 
 class Scheduler:
     def __init__(self, reg_pool: ScratchRegPool, vliw: bool = False):
@@ -94,6 +108,15 @@ class Scheduler:
             case _:
                 raise NotImplementedError(f"Unhandled engine {engine}")
 
+    def snapshot(self):
+        return {'scratch_info': deepcopy(self.scratch_info),
+                'program': deepcopy(self.program)}
+
+    def load_snapshot(self, snapshot):
+        self.scratch_info = snapshot['scratch_info']
+        self.program = snapshot['program']
+    
+        
     def __sched_alu(self, instruction: tuple):
         _, dest, a1, a2 = instruction
         dest = self.pool.scratch_parent[dest]

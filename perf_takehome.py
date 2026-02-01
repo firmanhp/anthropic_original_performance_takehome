@@ -79,7 +79,7 @@ class KernelBuilder:
         self.scheduler.add("valu", ("vbroadcast", addr, self.scratch_const(val)))
 
     #Robert Jenkins, jenkins32: https://gist.github.com/badboy/6267743#robert-jenkins-32-bit-integer-hash-function
-    def build_hash(self, val_hash_reg, tmp1, tmp2, round, i):
+    def hash(self, val_hash_reg, tmp1, tmp2, round, i):
         # alu(self, core, op, dest, a1, a2)
         self.scheduler.add("alu", ("+", tmp1, val_hash_reg, self.scratch_const(0x7ED55D16)))
         self.scheduler.add("alu", ("<<", tmp2, val_hash_reg, self.scratch_const(12)))
@@ -111,7 +111,7 @@ class KernelBuilder:
         self.scheduler.add("alu", ("^", val_hash_reg, tmp1, tmp2))
         self.scheduler.add("debug", ("compare", val_hash_reg, (round, i, "hash_stage", 5)))
 
-    def build_v_hash(self, reg, tmp1, tmp2, round, i):
+    def v_hash(self, reg, tmp1, tmp2, round, i):
         # valu has "multiply_add", we should exploit this
         # alu(self, core, op, dest, a1, a2)
         self.scheduler.add("valu", ("+", tmp1, reg, self.scratch_v_const(0x7ED55D16)))
@@ -146,6 +146,117 @@ class KernelBuilder:
         self.scheduler.add("valu", (">>", tmp2, reg, self.scratch_v_const(16)))
         self.scheduler.add("valu", ("^", reg, tmp1, tmp2))
         self.scheduler.add("debug", ("vcompare", reg, vcompare_keys(round, i, "hash_stage", 5)))
+
+    def schedule_work_vlen_valu(self, round, i, **vec_regs):
+        assert 'idx_v_regstore' in vec_regs
+        assert 'val_v_regstore' in vec_regs
+        assert 'input_forest_p_v_const' in vec_regs
+        assert 'input_n_v_const' in vec_regs
+        assert 'one_v_const' in vec_regs
+        assert 'two_v_const' in vec_regs
+
+        tmp_addr = self.pool.alloc(length=VLEN)
+        tmp1 = self.pool.alloc(length=VLEN)
+        tmp2 = self.pool.alloc(length=VLEN)
+        tmp_node_val = self.pool.alloc(length=VLEN)
+        tmp_idx_move = self.pool.alloc(length=VLEN)
+        
+        idx_v_regstore = vec_regs['idx_v_regstore']
+        val_v_regstore = vec_regs['val_v_regstore']
+        input_forest_p_v_const = vec_regs['input_forest_p_v_const']
+        input_n_v_const = vec_regs['input_n_v_const']
+        one_v_const = vec_regs['one_v_const']
+        two_v_const = vec_regs['two_v_const']
+        
+        # idx = mem[inp_indices_p + i]
+        self.scheduler.add("debug", ("vcompare", idx_v_regstore, vcompare_keys(round, i, "idx")))
+        # val = mem[inp_values_p + i]
+        self.scheduler.add("debug", ("vcompare", val_v_regstore, vcompare_keys(round, i, "val")))
+
+        # node_val = mem[forest_values_p + idx]
+        self.scheduler.add("valu", ("+", tmp_addr, input_forest_p_v_const, idx_v_regstore))
+        for offset in range(VLEN):
+            self.scheduler.add("load", ("load_offset", tmp_node_val, tmp_addr, offset))
+        self.scheduler.add("debug", ("vcompare", tmp_node_val, vcompare_keys(round, i, "node_val")))
+
+        # val = myhash(val ^ node_val)
+        # mem[inp_values_p + i] = val
+        self.scheduler.add("valu", ("^", val_v_regstore, val_v_regstore, tmp_node_val))
+        self.v_hash(val_v_regstore, tmp1, tmp2, round, i)
+        self.scheduler.add("debug", ("vcompare", val_v_regstore, vcompare_keys(round, i, "hashed_val")))
+
+        # idx = 2*idx + (1 if val % 2 == 0 else 2)
+        # idx --> 2*idx + (val&1) + 1
+        self.scheduler.add("valu", ("multiply_add", idx_v_regstore, idx_v_regstore, two_v_const, one_v_const))
+        self.scheduler.add("valu", ("&", tmp_idx_move, val_v_regstore, one_v_const))
+        self.scheduler.add("valu", ("+", idx_v_regstore, idx_v_regstore, tmp_idx_move))
+        self.scheduler.add("debug", ("vcompare", idx_v_regstore, vcompare_keys(round, i, "next_idx")))
+
+        # idx = 0 if idx >= n_nodes else idx
+        # ---> idx = cond*idx, cond = idx < n_nodes
+        # mem[inp_indices_p + i] = idx
+        self.scheduler.add("valu", ("<", tmp1, idx_v_regstore, input_n_v_const))
+        self.scheduler.add("valu", ("*", idx_v_regstore, idx_v_regstore, tmp1))
+        self.scheduler.add("debug", ("vcompare", idx_v_regstore, vcompare_keys(round, i, "wrapped_idx")))
+
+        self.pool.free(tmp1)
+        self.pool.free(tmp2)
+        self.pool.free(tmp_node_val)
+        self.pool.free(tmp_addr)
+        self.pool.free(tmp_idx_move)
+
+    def schedule_work_vlen_alu(self, round, i, **vec_regs):
+        assert 'idx_v_regstore' in vec_regs
+        assert 'val_v_regstore' in vec_regs
+        assert 'input_forest_p_v_const' in vec_regs
+        assert 'input_n_v_const' in vec_regs
+        assert 'one_v_const' in vec_regs
+        assert 'two_v_const' in vec_regs
+
+        for offset in range(VLEN):
+            tmp_addr = self.pool.alloc(length=1)
+            tmp1 = self.pool.alloc(length=1)
+            tmp2 = self.pool.alloc(length=1)
+            tmp_node_val = self.pool.alloc(length=1)
+            tmp_idx_move = self.pool.alloc(length=1)
+
+            idx_v_regstore = vec_regs['idx_v_regstore'] + offset
+            val_v_regstore = vec_regs['val_v_regstore'] + offset
+            input_forest_p_v_const = vec_regs['input_forest_p_v_const'] + offset
+            input_n_v_const = vec_regs['input_n_v_const'] + offset
+            one_v_const = vec_regs['one_v_const'] + offset
+            two_v_const = vec_regs['two_v_const'] + offset
+
+            # idx = mem[inp_indices_p + i]
+            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i, "idx")))
+            # val = mem[inp_values_p + i]
+            self.scheduler.add("debug", ("compare", val_v_regstore, (round, i, "val")))
+
+            # node_val = mem[forest_values_p + idx]
+            self.scheduler.add("alu", ("+", tmp_addr, input_forest_p_v_const, idx_v_regstore))
+            self.scheduler.add("load", ("load", tmp_node_val, tmp_addr))
+            self.scheduler.add("debug", ("compare", tmp_node_val, (round, i, "node_val")))
+
+            # val = myhash(val ^ node_val)
+            # mem[inp_values_p + i] = val
+            self.scheduler.add("alu", ("^", val_v_regstore, val_v_regstore, tmp_node_val))
+            self.hash(val_v_regstore, tmp1, tmp2, round, i)
+            self.scheduler.add("debug", ("compare", val_v_regstore, (round, i, "hashed_val")))
+
+            # idx = 2*idx + (1 if val % 2 == 0 else 2)
+            # idx --> 2*idx + (val&1) + 1
+            self.scheduler.add("alu", ("<<", idx_v_regstore, idx_v_regstore, one_v_const))
+            self.scheduler.add("alu", ("&", tmp_idx_move, val_v_regstore, one_v_const))
+            self.scheduler.add("alu", ("+", tmp_idx_move, tmp_idx_move, one_v_const))
+            self.scheduler.add("alu", ("+", idx_v_regstore, idx_v_regstore, tmp_idx_move))
+            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i, "next_idx")))
+
+            # idx = 0 if idx >= n_nodes else idx
+            # ---> idx = cond*idx, cond = idx < n_nodes
+            # mem[inp_indices_p + i] = idx
+            self.scheduler.add("alu", ("<", tmp1, idx_v_regstore, input_n_v_const))
+            self.scheduler.add("alu", ("*", idx_v_regstore, idx_v_regstore, tmp1))
+            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i, "wrapped_idx")))
 
     def build_kernel(self, forest_height: int, n_nodes: int, batch_size: int, rounds: int):
         init_vars = [
@@ -266,50 +377,36 @@ class KernelBuilder:
             i = 0
             while i + VLEN - 1 < SIMD_LIMIT:
                 # Vector scratch registers
-                tmp_addr = self.pool.alloc(length=VLEN)
-                tmp1 = self.pool.alloc(length=VLEN)
-                tmp2 = self.pool.alloc(length=VLEN)
-                tmp_node_val = self.pool.alloc(length=VLEN)
-                tmp_idx_move = self.pool.alloc(length=VLEN)
                 assert idx_v_regstore[i] != -1, f"Unaligned access {i}"
                 assert val_v_regstore[i] != -1, f"Unaligned access {i}"
 
-                # idx = mem[inp_indices_p + i]
-                self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "idx")))
-                # val = mem[inp_values_p + i]
-                self.scheduler.add("debug", ("vcompare", val_v_regstore[i], vcompare_keys(round, i, "val")))
+                sched_pre_snap, pool_pre_snap = self.scheduler.snapshot(), self.pool.snapshot()
+                self.schedule_work_vlen_valu(round, i,
+                                             idx_v_regstore = idx_v_regstore[i],
+                                             val_v_regstore = val_v_regstore[i],
+                                             input_forest_p_v_const = input_forest_p_v_const,
+                                             input_n_v_const = input_n_v_const,
+                                             one_v_const = one_v_const,
+                                             two_v_const = two_v_const)
+                sched_valu_snap, pool_valu_snap = self.scheduler.snapshot(), self.pool.snapshot()
+                cycles_valu = len(self.scheduler.program)
+                self.scheduler.load_snapshot(sched_pre_snap)
+                self.pool.load_snapshot(pool_pre_snap)
+                self.schedule_work_vlen_alu(round, i,
+                                            idx_v_regstore = idx_v_regstore[i],
+                                            val_v_regstore = val_v_regstore[i],
+                                            input_forest_p_v_const = input_forest_p_v_const,
+                                            input_n_v_const = input_n_v_const,
+                                            one_v_const = one_v_const,
+                                            two_v_const = two_v_const)
+                cycles_alu = len(self.scheduler.program)
+                if cycles_valu < cycles_alu:
+                    print(f"firmanhp round {round} {i}:{i+VLEN-1} take valu")
+                    self.scheduler.load_snapshot(sched_valu_snap)
+                    self.pool.load_snapshot(pool_valu_snap)
+                else:
+                    print(f"firmanhp round {round} {i}:{i+VLEN-1} take alu")
 
-                # node_val = mem[forest_values_p + idx]
-                self.scheduler.add("valu", ("+", tmp_addr, input_forest_p_v_const, idx_v_regstore[i]))
-                for offset in range(VLEN):
-                    self.scheduler.add("load", ("load_offset", tmp_node_val, tmp_addr, offset))
-                self.scheduler.add("debug", ("vcompare", tmp_node_val, vcompare_keys(round, i, "node_val")))
-
-                # val = myhash(val ^ node_val)
-                # mem[inp_values_p + i] = val
-                self.scheduler.add("valu", ("^", val_v_regstore[i], val_v_regstore[i], tmp_node_val))
-                self.build_v_hash(val_v_regstore[i], tmp1, tmp2, round, i)
-                self.scheduler.add("debug", ("vcompare", val_v_regstore[i], vcompare_keys(round, i, "hashed_val")))
-
-                # idx = 2*idx + (1 if val % 2 == 0 else 2)
-                # idx --> 2*idx + (val&1) + 1
-                self.scheduler.add("valu", ("multiply_add", idx_v_regstore[i], idx_v_regstore[i], two_v_const, one_v_const))
-                self.scheduler.add("valu", ("&", tmp_idx_move, val_v_regstore[i], one_v_const))
-                self.scheduler.add("valu", ("+", idx_v_regstore[i], idx_v_regstore[i], tmp_idx_move))
-                self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "next_idx")))
-
-                # idx = 0 if idx >= n_nodes else idx
-                # ---> idx = cond*idx, cond = idx < n_nodes
-                # mem[inp_indices_p + i] = idx
-                self.scheduler.add("valu", ("<", tmp1, idx_v_regstore[i], input_n_v_const))
-                self.scheduler.add("valu", ("*", idx_v_regstore[i], idx_v_regstore[i], tmp1))
-                self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(round, i, "wrapped_idx")))
-
-                self.pool.free(tmp1)
-                self.pool.free(tmp2)
-                self.pool.free(tmp_node_val)
-                self.pool.free(tmp_addr)
-                self.pool.free(tmp_idx_move)
                 i += VLEN
 
             while i < batch_size:
@@ -336,7 +433,7 @@ class KernelBuilder:
                 # val = myhash(val ^ node_val)
                 # mem[inp_values_p + i] = val
                 self.scheduler.add("alu", ("^", val_regstore[i], val_regstore[i], tmp_node_val))
-                self.build_hash(val_regstore[i], tmp1, tmp2, round, i)
+                self.hash(val_regstore[i], tmp1, tmp2, round, i)
                 self.scheduler.add("debug", ("compare", val_regstore[i], (round, i, "hashed_val")))
 
                 # idx = 2*idx + (1 if val % 2 == 0 else 2)
