@@ -76,7 +76,7 @@ class Scheduler:
                 case "load":
                     self.__sched_load(instr)
                 case _:
-                    raise f"Unhandled engine {engine}"
+                    raise NotImplementedError(f"Unhandled engine {engine}")
 
         return self.cycle
 
