@@ -148,7 +148,7 @@ class Scheduler:
                 on_pick_cyc_fn = on_pick_cyc
 
             case _:
-                raise f"Unhandled flow {instruction}"
+                raise NotImplementedError(f"Unhandled flow {instruction}")
         assert best_cyc is not None
         assert on_pick_cyc_fn is not None
 
@@ -175,7 +175,7 @@ class Scheduler:
                         self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
             case _:
-                raise f"Unhandled load {instruction}"
+                raise NotImplementedError(f"Unhandled load {instruction}")
         assert best_cyc is not None
         assert on_pick_cyc_fn is not None
 
@@ -200,7 +200,7 @@ class Scheduler:
                     self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
             case _:
-                raise f"Unhandled store {instruction}"
+                raise NotImplementedError(f"Unhandled store {instruction}")
         assert best_cyc is not None
         assert on_pick_cyc is not None
 
@@ -220,7 +220,7 @@ class Scheduler:
                     self.scratch_info[reg] = (cyc_to_place, reg_w)
                 on_pick_cyc_fn = on_pick_cyc
             case _:
-                raise f"Unhandled debug {instruction}"
+                raise NotImplementedError(f"Unhandled debug {instruction}")
         assert cyc_to_place is not None
         assert on_pick_cyc_fn is not None
 
