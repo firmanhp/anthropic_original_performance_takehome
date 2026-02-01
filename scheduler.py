@@ -121,9 +121,6 @@ class Scheduler:
         
     def __sched_alu(self, instruction: tuple):
         _, dest, a1, a2 = instruction
-        dest = self.pool.scratch_parent[dest]
-        a1 = self.pool.scratch_parent[a1]
-        a2 = self.pool.scratch_parent[a2]
         dest_read, dest_write = self.scratch_info[dest]
         a1_read, a1_write = self.scratch_info[a1]
         a2_read, a2_write = self.scratch_info[a2]
@@ -283,6 +280,8 @@ class Scheduler:
                         self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
             case ("load_offset", dest, addr, offset):
+                dest += offset
+                addr += offset
                 dest_r, dest_w = self.scratch_info[dest]
                 addr_r, addr_w = self.scratch_info[addr]
 
@@ -335,8 +334,6 @@ class Scheduler:
         on_pick_cyc_fn = None
         match instruction:
             case ("store", dest, addr):
-                dest = self.pool.scratch_parent[dest]
-                addr = self.pool.scratch_parent[addr]
                 dest_r, dest_w = self.scratch_info[dest]
                 addr_r, addr_w = self.scratch_info[addr]
 
@@ -383,11 +380,11 @@ class Scheduler:
                     self.scratch_info[reg] = (cyc_to_place, reg_w)
                 on_pick_cyc_fn = on_pick_cyc
             case ("vcompare", reg, _):
-                reg_r, reg_w = self.scratch_info[reg]
-                cyc_to_place = reg_w + 1
+                cyc_to_place = max(info[WRITE]+1 for info in self.scratch_info[reg:reg+VLEN])
                 # print('firmanhp put in', cyc_to_place)
                 def on_pick_cyc(cyc):
-                    self.scratch_info[reg] = (cyc_to_place, reg_w)
+                    for i in range(VLEN):
+                        self.scratch_info[reg+i] = (cyc_to_place, self.scratch_info[reg+i][WRITE])
                 on_pick_cyc_fn = on_pick_cyc
             case ("comment", _):
                 cyc_to_place = len(self.program) - 1

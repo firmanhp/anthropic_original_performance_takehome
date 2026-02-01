@@ -213,13 +213,17 @@ class KernelBuilder:
         assert 'one_v_const' in vec_regs
         assert 'two_v_const' in vec_regs
 
+        v_tmp_addr = self.pool.alloc(length=VLEN)
+        v_tmp1 = self.pool.alloc(length=VLEN)
+        v_tmp2 = self.pool.alloc(length=VLEN)
+        v_tmp_node_val = self.pool.alloc(length=VLEN)
+        v_tmp_idx_move = self.pool.alloc(length=VLEN)
         for offset in range(VLEN):
-            tmp_addr = self.pool.alloc(length=1)
-            tmp1 = self.pool.alloc(length=1)
-            tmp2 = self.pool.alloc(length=1)
-            tmp_node_val = self.pool.alloc(length=1)
-            tmp_idx_move = self.pool.alloc(length=1)
-
+            tmp1 = v_tmp1 + offset
+            tmp2 = v_tmp2 + offset
+            tmp_node_val = v_tmp_node_val + offset
+            tmp_addr = v_tmp_addr + offset
+            tmp_idx_move = v_tmp_idx_move + offset
             idx_v_regstore = vec_regs['idx_v_regstore'] + offset
             val_v_regstore = vec_regs['val_v_regstore'] + offset
             input_forest_p_v_const = vec_regs['input_forest_p_v_const'] + offset
@@ -228,20 +232,20 @@ class KernelBuilder:
             two_v_const = vec_regs['two_v_const'] + offset
 
             # idx = mem[inp_indices_p + i]
-            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i, "idx")))
+            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i+offset, "idx")))
             # val = mem[inp_values_p + i]
-            self.scheduler.add("debug", ("compare", val_v_regstore, (round, i, "val")))
+            self.scheduler.add("debug", ("compare", val_v_regstore, (round, i+offset, "val")))
 
             # node_val = mem[forest_values_p + idx]
             self.scheduler.add("alu", ("+", tmp_addr, input_forest_p_v_const, idx_v_regstore))
             self.scheduler.add("load", ("load", tmp_node_val, tmp_addr))
-            self.scheduler.add("debug", ("compare", tmp_node_val, (round, i, "node_val")))
+            self.scheduler.add("debug", ("compare", tmp_node_val, (round, i+offset, "node_val")))
 
             # val = myhash(val ^ node_val)
             # mem[inp_values_p + i] = val
             self.scheduler.add("alu", ("^", val_v_regstore, val_v_regstore, tmp_node_val))
-            self.hash(val_v_regstore, tmp1, tmp2, round, i)
-            self.scheduler.add("debug", ("compare", val_v_regstore, (round, i, "hashed_val")))
+            self.hash(val_v_regstore, tmp1, tmp2, round, i+offset)
+            self.scheduler.add("debug", ("compare", val_v_regstore, (round, i+offset, "hashed_val")))
 
             # idx = 2*idx + (1 if val % 2 == 0 else 2)
             # idx --> 2*idx + (val&1) + 1
@@ -249,14 +253,19 @@ class KernelBuilder:
             self.scheduler.add("alu", ("&", tmp_idx_move, val_v_regstore, one_v_const))
             self.scheduler.add("alu", ("+", tmp_idx_move, tmp_idx_move, one_v_const))
             self.scheduler.add("alu", ("+", idx_v_regstore, idx_v_regstore, tmp_idx_move))
-            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i, "next_idx")))
+            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i+offset, "next_idx")))
 
             # idx = 0 if idx >= n_nodes else idx
             # ---> idx = cond*idx, cond = idx < n_nodes
             # mem[inp_indices_p + i] = idx
             self.scheduler.add("alu", ("<", tmp1, idx_v_regstore, input_n_v_const))
             self.scheduler.add("alu", ("*", idx_v_regstore, idx_v_regstore, tmp1))
-            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i, "wrapped_idx")))
+            self.scheduler.add("debug", ("compare", idx_v_regstore, (round, i+offset, "wrapped_idx")))
+        self.pool.free(v_tmp1)
+        self.pool.free(v_tmp2)
+        self.pool.free(v_tmp_node_val)
+        self.pool.free(v_tmp_addr)
+        self.pool.free(v_tmp_idx_move)
 
     def build_kernel(self, forest_height: int, n_nodes: int, batch_size: int, rounds: int):
         init_vars = [
@@ -354,8 +363,6 @@ class KernelBuilder:
             val_v_regstore[i] = self.pool.alloc(f"val[{i}:{i+VLEN-1}]", length=VLEN)
             self.scheduler.add("load", ("vload", idx_v_regstore[i], tmp_addr))
             self.scheduler.add("load", ("vload", val_v_regstore[i], tmp_addr2))
-            self.scheduler.add("debug", ("vcompare", idx_v_regstore[i], vcompare_keys(0, i, "idx")))
-            self.scheduler.add("debug", ("vcompare", val_v_regstore[i], vcompare_keys(0, i, "val")))
 
             i += VLEN
             self.scheduler.add("alu", ("+", tmp_addr, tmp_addr, vlen_const))
@@ -400,6 +407,7 @@ class KernelBuilder:
                                             one_v_const = one_v_const,
                                             two_v_const = two_v_const)
                 cycles_alu = len(self.scheduler.program)
+                print(f"firmanhp round {round} {i}:{i+VLEN-1} (valu,alu) ({cycles_valu}, {cycles_alu})")
                 if cycles_valu < cycles_alu:
                     print(f"firmanhp round {round} {i}:{i+VLEN-1} take valu")
                     self.scheduler.load_snapshot(sched_valu_snap)
