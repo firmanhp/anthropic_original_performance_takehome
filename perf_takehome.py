@@ -230,7 +230,7 @@ class KernelBuilder:
         self.pool.free(tmp_addr)
         self.pool.free(tmp_addr2)
 
-        self.instrs.extend(Scheduler().build(body, vliw=True))
+        self.instrs.extend(Scheduler(self.pool).build(body, vliw=True))
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
 
