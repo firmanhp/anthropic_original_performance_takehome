@@ -49,61 +49,16 @@ class KernelBuilder:
     def debug_info(self):
         return DebugInfo(scratch_map=self.pool.scratch_debug)
 
-    def append_alu(self, cycles: [Instruction], single_instruction):
-        if not cycles:
-            cycles.append({'alu': [single_instruction]})
-            return
-        
-        last_cyc = cycles[-1]
-        if 'alu' not in last_cyc or len(last_cyc['alu']) >= SLOT_LIMITS['alu']:
-            cycles.append({'alu': [single_instruction]})
-            return
-        
-        # op dest a1 a2
-        # dest <- last write, last read
-        # a1 <- last write, last read
-        # a2 <- last write, last read
-        reads = set()
-        writes = set()
-        for uop in last_cyc['alu']:
-            op, dest, a1, a2 = uop
-            writes.add(dest)
-            reads.add(dest)
-            reads.add(a1)
-            reads.add(a2)
-        
-        op, dest, a1, a2 = single_instruction
-        if dest not in reads and a1 not in writes and a2 not in writes:
-            cycles[-1]["alu"].append(single_instruction)
-        else:
-            cycles.append({'alu': [single_instruction]})
-
-    def build(self, single_instructions: list[tuple[Engine, tuple]], vliw: bool = True):
-        # Simple slot packing that just uses one slot per instruction bundle
-        # cycles = []
-        # for engine, instruction in single_instructions:
-        #     # consider alu
-        #     if engine == 'alu':
-        #         self.append_alu(cycles, instruction)
-        #         continue
-            
-        #     cycles.append({engine: [instruction]})
-
-        return Scheduler().build(single_instructions, vliw)
-
-    def add(self, engine, slot):
-        self.instrs.append({engine: [slot]})
-
     def scratch_const(self, val, name=None):
         assert val in self.const_map, f"Unreserved const: {val}"
         return self.const_map[val]
 
     def preload_const(self, val):
         if val in self.const_map:
-            return
+            return []
         addr = self.pool.alloc(f"CONST[0x{val:X}]")
-        self.add("load", ("const", addr, val))
         self.const_map[val] = addr
+        return [("load", ("const", addr, val))]
 
     #Robert Jenkins, jenkins32: https://gist.github.com/badboy/6267743#robert-jenkins-32-bit-integer-hash-function
     def build_hash(self, val_hash_reg, tmp1, tmp2, round, i):
@@ -159,31 +114,33 @@ class KernelBuilder:
             "inp_values_p",
         ]
 
+        body = []  # array of slots
+
         # Const preloads
-        self.preload_const(0x7ED55D16)
-        self.preload_const(12)
-        self.preload_const(0xC761C23C)
-        self.preload_const(19)
-        self.preload_const(0x165667B1)
-        self.preload_const(5)
-        self.preload_const(0xD3A2646C)
-        self.preload_const(9)
-        self.preload_const(0xFD7046C5)
-        self.preload_const(3)
-        self.preload_const(0xB55A4F09)
-        self.preload_const(16)
-        self.preload_const(0)
-        self.preload_const(1)
-        self.preload_const(2)
+        body += self.preload_const(0x7ED55D16)
+        body += self.preload_const(12)
+        body += self.preload_const(0xC761C23C)
+        body += self.preload_const(19)
+        body += self.preload_const(0x165667B1)
+        body += self.preload_const(5)
+        body += self.preload_const(0xD3A2646C)
+        body += self.preload_const(9)
+        body += self.preload_const(0xFD7046C5)
+        body += self.preload_const(3)
+        body += self.preload_const(0xB55A4F09)
+        body += self.preload_const(16)
+        body += self.preload_const(0)
+        body += self.preload_const(1)
+        body += self.preload_const(2)
 
         # Scratch space addresses
 
         input_reg = {}
         for i, v in enumerate(init_vars):
             # consider: replacing const register with tmp <- add_imm ZERO #i
-            self.preload_const(i);
+            body += self.preload_const(i);
             input_reg[v] = self.pool.alloc(v, 1)
-            self.add("load", ("load", input_reg[v], self.scratch_const(i)))
+            body.append(("load", ("load", input_reg[v], self.scratch_const(i))))
 
         zero_const = self.scratch_const(0)
         one_const = self.scratch_const(1)
@@ -193,11 +150,9 @@ class KernelBuilder:
         # kernel to let you debug at intermediate steps. The testing harness in this
         # file requires these match up to the reference kernel's yields, but the
         # submission harness ignores them.
-        self.add("flow", ("pause",))
+        self.instrs.append({"flow": [("pause",)]})
         # Any debug engine instruction is ignored by the submission simulator
-        self.add("debug", ("comment", "Starting loop"))
-
-        body = []  # array of slots
+        self.instrs.append({"debug": [("comment", "Starting loop")]})
 
         # this code only works with small batch sizes! bcs it is not smart enough ;)
         # instead of working in memory, let's put into register
@@ -268,9 +223,6 @@ class KernelBuilder:
         tmp_addr = self.pool.alloc()
         tmp_addr2 = self.pool.alloc()
         for i in range(batch_size):
-            idx_regstore.append(self.pool.alloc())
-            val_regstore.append(self.pool.alloc())
-
             body.append(("flow", ("add_imm", tmp_addr, input_reg["inp_indices_p"], i)))
             body.append(("store", ("store", tmp_addr, idx_regstore[i])))
 
@@ -279,8 +231,7 @@ class KernelBuilder:
         self.pool.free(tmp_addr)
         self.pool.free(tmp_addr2)
 
-        body_instrs = self.build(body)
-        self.instrs.extend(body_instrs)
+        self.instrs.extend(Scheduler().build(body, vliw=True))
         # Required to match with the yield in reference_kernel2
         self.instrs.append({"flow": [("pause",)]})
 

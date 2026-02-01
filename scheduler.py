@@ -174,6 +174,16 @@ class Scheduler:
                     if addr != dest:
                         self.scratch_info[addr] = (cyc, addr_w)
                 on_pick_cyc_fn = on_pick_cyc
+            case ("const", dest, val):
+                dest_r, dest_w = self.scratch_info[dest]
+
+                best_cyc = max(
+                    # write must happen after read
+                    dest_r + 1, dest_w + 1,
+                )
+                def on_pick_cyc(cyc):
+                    self.scratch_info[dest] = (dest_r, cyc)
+                on_pick_cyc_fn = on_pick_cyc
             case _:
                 raise NotImplementedError(f"Unhandled load {instruction}")
         assert best_cyc is not None
